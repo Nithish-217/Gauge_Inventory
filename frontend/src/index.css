@@ -1,4 +1,17 @@
+/* Theme variables */
 :root{
+  /* Light theme defaults */
+  --bg:#f8fafc; /* slate-50 */
+  --card:#ffffff; /* white */
+  --muted:#475569; /* slate-600 */
+  --text:#0f172a; /* slate-900 */
+  --primary:#2563eb; /* blue-600 */
+  --primary-hover:#1d4ed8; /* blue-700 */
+  --ring:rgba(37,99,235,0.25);
+  --error:#dc2626; /* red-600 */
+}
+
+:root[data-theme="dark"]{
   --bg:#0f172a; /* slate-900 */
   --card:#111827; /* gray-900 */
   --muted:#94a3b8; /* slate-400 */
@@ -13,9 +26,16 @@ html,body,#root{height:100%}
 body{
   margin:0;
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
-  background: radial-gradient(1200px 600px at 50% -10%, #1e293b 0%, var(--bg) 60%);
+  background: radial-gradient(1200px 600px at 50% -10%, rgba(30,41,59,0.12) 0%, var(--bg) 60%);
   color:var(--text);
 }
+
+/* Fully dark overrides */
+:root[data-theme="dark"] body{ background: var(--bg); }
+:root[data-theme="dark"] .card{ background:#0b1324; border:1px solid rgba(255,255,255,0.08); box-shadow: 0 10px 30px rgba(0,0,0,0.6) }
+:root[data-theme="dark"] .sidebar{ background:#0b1324; border-right:1px solid rgba(255,255,255,0.08) }
+:root[data-theme="dark"] .menu-item:hover{ background: rgba(255,255,255,0.06) }
+:root[data-theme="dark"] .menu-item.active{ background: rgba(37,99,235,0.16); border-color: var(--primary) }
 .container{height:100%;display:grid;place-items:center;padding:24px}
 .card{width:100%;max-width:400px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));backdrop-filter:saturate(120%) blur(8px);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:28px;box-shadow:0 10px 30px rgba(0,0,0,0.45)}
 .brand{display:flex;align-items:center;gap:12px;margin-bottom:12px}
@@ -35,3 +55,37 @@ h1{font-size:22px;line-height:1.25;margin:0;letter-spacing:.3px}
 .link:hover{text-decoration:underline}
 .error{color:var(--error);font-size:13px;min-height:18px}
 .footer{margin-top:18px;color:var(--muted);font-size:12px;text-align:center}
+
+/* Fixed theme toggle button */
+.theme-toggle{
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  width: 40px;
+  height: 40px;
+  border-radius: 9999px;
+  border: 1px solid rgba(0,0,0,0.08);
+  background: var(--card);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+  transition: transform .05s ease, filter .2s ease, background .2s ease, color .2s ease;
+}
+.theme-toggle:hover{filter:brightness(1.05)}
+.theme-toggle:active{transform:translateY(1px)}
+.theme-toggle svg{display:block}
+
+/* Admin layout */
+.admin-layout{display:flex;min-height:100vh;background:var(--bg);color:var(--text)}
+.sidebar{width:260px;background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(0,0,0,0.06));border-right:1px solid rgba(0,0,0,0.08);padding:16px;position:sticky;top:0;height:100vh}
+.sidebar-header{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.cmti-logo{width:36px;height:36px;border-radius:8px;background:linear-gradient(135deg,var(--primary),#22d3ee);display:flex;align-items:center;justify-content:center;color:white;font-weight:800;letter-spacing:.5px;box-shadow:0 6px 16px rgba(37,99,235,0.35)}
+.sidebar-title{font-weight:700}
+.menu{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.menu-item{padding:10px 12px;border-radius:8px;text-decoration:none;color:var(--text);border:1px solid transparent}
+.menu-item:hover{background:rgba(0,0,0,0.05)}
+.menu-item.active{border-color:var(--primary);background:rgba(37,99,235,0.08)}
+.admin-content{flex:1;padding:24px}

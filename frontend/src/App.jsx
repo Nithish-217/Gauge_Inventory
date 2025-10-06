@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 export default function App() {
   const [username, setUsername] = useState('')
@@ -7,6 +8,7 @@ export default function App() {
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const year = new Date().getFullYear()
+  const navigate = useNavigate()
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -29,7 +31,16 @@ export default function App() {
       }
       const data = await res.json()
       if (data && data.success) {
-        setMessage('Login successful. Welcome, ' + (data.user?.username || 'user') + '!')
+        const role = (data.user?.role ?? data.role ?? (Array.isArray(data.user?.roles) ? data.user.roles[0] : undefined) ?? 'user').toString().toLowerCase()
+        setMessage(`Welcome (${role})!`)
+        // Persist basic auth view state if needed
+        try { localStorage.setItem('role', role) } catch {}
+        // Navigate based on role
+        if (role === 'admin') {
+          navigate('/admin')
+        } else {
+          navigate('/operator')
+        }
       } else {
         throw new Error(data?.message || 'Invalid credentials')
       }
@@ -46,12 +57,12 @@ export default function App() {
   }
 
   return (
-    <div className="container">
-      <div className="card">
-        <div className="brand">
-          <div className="brand-logo" aria-hidden="true"></div>
-          <h1>CMTI</h1>
-        </div>
+      <div className="container">
+        <div className="card">
+          <div className="brand">
+            <div className="brand-logo" aria-hidden="true"></div>
+            <h1>CMTI</h1>
+          </div>
 
         <div id="root-inner">
           <form onSubmit={handleSubmit} noValidate>
@@ -93,8 +104,8 @@ export default function App() {
           </form>
         </div>
 
-        <p className="footer">© <span>{year}</span> CMTI. All rights reserved.</p>
+          <p className="footer">© <span>{year}</span> CMTI. All rights reserved.</p>
+        </div>
       </div>
-    </div>
   )
 }
