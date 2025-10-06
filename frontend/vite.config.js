@@ -11,6 +11,16 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
         secure: false
+      },
+      '/users': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false
+      },
+      '/equipment': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false
       }
     }
   }

@@ -15,6 +15,8 @@ import CalibrationPlanner from './pages/admin/CalibrationPlanner.jsx'
 import GaugeTracker from './pages/admin/GaugeTracker.jsx'
 import ReportManager from './pages/admin/ReportManager.jsx'
 import LabelManager from './pages/admin/LabelManager.jsx'
+import CreateUser from './pages/admin/CreateUser.jsx'
+import AdminHome from './pages/admin/Home.jsx'
 
 const root = createRoot(document.getElementById('root'))
 root.render(
@@ -24,7 +26,8 @@ root.render(
         <Route path="/" element={<Layout />}> 
           <Route index element={<App />} />
           <Route path="admin" element={<AdminDashboard />} >
-            <Route index element={<div style={{padding:24}}><h2>Admin Home</h2><p>Select a menu item to continue.</p></div>} />
+            <Route index element={<AdminHome />} />
+            <Route path="create-user" element={<CreateUser />} />
             <Route path="gauge-inventory" element={<GaugeInventory />} />
             <Route path="calibration-planner" element={<CalibrationPlanner />} />
             <Route path="gauge-tracker" element={<GaugeTracker />} />

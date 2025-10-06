@@ -1,6 +1,6 @@
 import React from 'react'
 import EquipmentTable from '../../components/EquipmentTable.jsx'
 
-export default function OperatorHome() {
-  return <EquipmentTable mode="operator" />
+export default function AdminHome() {
+  return <EquipmentTable />
 }
