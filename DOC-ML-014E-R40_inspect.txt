@@ -1,0 +1,14 @@
+Workbook: d:\gaugeinventory\DOC-ML-014E-R40.xlsx
+Sheets: Table 1
+
+[Sheet: Table 1] Preview:
+Columns: , , METROLOGY LABORATORY, , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , Doc. No.: DOC/ML/014E, , , , , , , , , , , , , , , 
+[row] , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , Rev. No.: 40
+Date: 11.08.2020
+Sheet      1 of  9, , , , , , , , , , , , , , , 
+[row] , , PERIODIC CALIBRATION SCHEDULES, , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , 
+[row] Equipments used for Calibration in Metrology laboratory, , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , 
+[row] Sl.
+No., Name Of The Equipment, , Location, , Receipt date, Make/Model, , , Idfn No., , Range, , , Acceptable Limit, , , , , , , , , , , , Overall Measurement uncertainty, , , Calibration Freq / Month, , , Date of last calibration/ calibration due on, , , , PCR No., , , Remarks, , , , , , , , , , 
+[row] 1, Angle Gauge Blocks Cro Blox - Lab Master, , PML, , Oct 1993, Starrett 40893.6/ 48U8, , , AGB-C-01L, , Upto 90°, , ,  2 arc sec, , , , , , , , , , , ,  2.8 arc sec, , , 24M, , , July 19
+July 21, , , , PCR-ML-001, , , , , , , , , , , , , 

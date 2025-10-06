@@ -1,0 +1,37 @@
+:root{
+  --bg:#0f172a; /* slate-900 */
+  --card:#111827; /* gray-900 */
+  --muted:#94a3b8; /* slate-400 */
+  --text:#e5e7eb; /* gray-200 */
+  --primary:#2563eb; /* blue-600 */
+  --primary-hover:#1d4ed8; /* blue-700 */
+  --ring:rgba(37,99,235,0.35);
+  --error:#ef4444;
+}
+*{box-sizing:border-box}
+html,body,#root{height:100%}
+body{
+  margin:0;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  background: radial-gradient(1200px 600px at 50% -10%, #1e293b 0%, var(--bg) 60%);
+  color:var(--text);
+}
+.container{height:100%;display:grid;place-items:center;padding:24px}
+.card{width:100%;max-width:400px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));backdrop-filter:saturate(120%) blur(8px);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:28px;box-shadow:0 10px 30px rgba(0,0,0,0.45)}
+.brand{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.brand-logo{width:36px;height:36px;border-radius:8px;background:linear-gradient(135deg,var(--primary),#22d3ee);box-shadow:0 6px 16px rgba(37,99,235,0.35)}
+h1{font-size:22px;line-height:1.25;margin:0;letter-spacing:.3px}
+.subtle{color:var(--muted);font-size:14px;margin-bottom:22px}
+.field{margin-bottom:14px}
+.label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
+.input{width:100%;padding:12px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);background:rgba(2,6,23,0.5);color:var(--text);outline:none;transition:border-color .15s ease, box-shadow .15s ease}
+.input::placeholder{color:#64748b}
+.input:focus{border-color:var(--primary);box-shadow:0 0 0 4px var(--ring)}
+.actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:6px}
+.btn{flex:1;display:inline-flex;justify-content:center;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:linear-gradient(180deg,var(--primary),var(--primary-hover));color:#fff;font-weight:600;letter-spacing:.2px;cursor:pointer;transition:transform .03s ease, filter .2s ease}
+.btn:hover{filter:brightness(1.05)}
+.btn:active{transform:translateY(1px)}
+.link{color:#93c5fd;text-decoration:none;font-size:14px}
+.link:hover{text-decoration:underline}
+.error{color:var(--error);font-size:13px;min-height:18px}
+.footer{margin-top:18px;color:var(--muted);font-size:12px;text-align:center}
