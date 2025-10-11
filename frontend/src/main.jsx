@@ -2,6 +2,8 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import './index.css'
+import 'antd/dist/reset.css'
+import { ConfigProvider, theme } from 'antd'
 import Layout from './layouts/Layout.jsx'
 import App from './App.jsx'
 import AdminDashboard from './pages/AdminDashboard.jsx'
@@ -21,27 +23,29 @@ import AdminHome from './pages/admin/Home.jsx'
 const root = createRoot(document.getElementById('root'))
 root.render(
   <React.StrictMode>
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Layout />}> 
-          <Route index element={<App />} />
-          <Route path="admin" element={<AdminDashboard />} >
-            <Route index element={<AdminHome />} />
-            <Route path="create-user" element={<CreateUser />} />
-            <Route path="gauge-inventory" element={<GaugeInventory />} />
-            <Route path="calibration-planner" element={<CalibrationPlanner />} />
-            <Route path="gauge-tracker" element={<GaugeTracker />} />
-            <Route path="report-manager" element={<ReportManager />} />
-            <Route path="label-manager" element={<LabelManager />} />
+    <ConfigProvider theme={{ algorithm: theme.defaultAlgorithm }}>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Layout />}> 
+            <Route index element={<App />} />
+            <Route path="admin" element={<AdminDashboard />} >
+              <Route index element={<AdminHome />} />
+              <Route path="create-user" element={<CreateUser />} />
+              <Route path="gauge-inventory" element={<GaugeInventory />} />
+              <Route path="calibration-planner" element={<CalibrationPlanner />} />
+              <Route path="gauge-tracker" element={<GaugeTracker />} />
+              <Route path="report-manager" element={<ReportManager />} />
+              <Route path="label-manager" element={<LabelManager />} />
+            </Route>
+            <Route path="operator" element={<OperatorDashboard />} >
+              <Route index element={<OperatorHome />} />
+              <Route path="gauge-inventory" element={<OperatorGaugeInventory />} />
+              <Route path="tool-request" element={<ToolRequest />} />
+              <Route path="calibration-report" element={<CalibrationReport />} />
+            </Route>
           </Route>
-          <Route path="operator" element={<OperatorDashboard />} >
-            <Route index element={<OperatorHome />} />
-            <Route path="gauge-inventory" element={<OperatorGaugeInventory />} />
-            <Route path="tool-request" element={<ToolRequest />} />
-            <Route path="calibration-report" element={<CalibrationReport />} />
-          </Route>
-        </Route>
-      </Routes>
-    </BrowserRouter>
+        </Routes>
+      </BrowserRouter>
+    </ConfigProvider>
   </React.StrictMode>
 )

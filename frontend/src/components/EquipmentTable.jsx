@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { Table, Button, Input, InputNumber, Space, message } from 'antd'
+import { ReloadOutlined, PlusOutlined } from '@ant-design/icons'
 
 export default function EquipmentTable({ mode = 'admin' }) {
   const [items, setItems] = useState([])
@@ -8,9 +10,13 @@ export default function EquipmentTable({ mode = 'admin' }) {
   const [page, setPage] = useState(0)
   const [adding, setAdding] = useState(false)
   const [addErr, setAddErr] = useState('')
+  const [addSuccess, setAddSuccess] = useState('')
   const [addLoading, setAddLoading] = useState(false)
-  const [requestedBy, setRequestedBy] = useState('')
+  const [requestedBy, setRequestedBy] = useState(() => {
+    try { return localStorage.getItem('username') || 'operator' } catch { return 'operator' }
+  })
   const [qty, setQty] = useState({}) // { [gauge_id]: number }
+  const [fieldErrors, setFieldErrors] = useState({}) // { [name]: message }
   const [form, setForm] = useState({
     name_of_the_equipment: '',
     location: '',
@@ -36,7 +42,8 @@ export default function EquipmentTable({ mode = 'admin' }) {
         throw new Error(txt || 'Failed to load equipment')
       }
       const data = await res.json()
-      setItems(Array.isArray(data.items) ? data.items : [])
+      const arr = Array.isArray(data.items) ? data.items : []
+      setItems(arr.map(r => ({ ...r, key: r.gauge_id })))
     } catch (err) {
       setError(typeof err?.message === 'string' ? err.message : 'Failed to load equipment')
     } finally {
@@ -50,16 +57,58 @@ export default function EquipmentTable({ mode = 'admin' }) {
     e.preventDefault(); setPage(0); fetchData()
   }
 
+  const validateField = (name, value) => {
+    let msg = ''
+    switch (name) {
+      case 'name_of_the_equipment':
+        if (!String(value).trim()) msg = 'Required (text)'
+        break
+      case 'idfn_no':
+        if (!String(value).trim()) msg = 'Required (text)'
+        break
+      case 'calibration_freq_months':
+        if (value === '' || value === null || typeof value === 'undefined') msg = ''
+        else if (!/^\d+$/.test(String(value))) msg = 'Must be a whole number'
+        break
+      case 'pcr_number':
+        if (value === '' || value === null || typeof value === 'undefined') msg = ''
+        else if (!/^\d+$/.test(String(value))) msg = 'Digits only'
+        else if (String(value).length > 18) msg = 'Too long (max 18 digits)'
+        break
+      case 'receipt_date':
+      case 'date_of_last_calibration':
+      case 'calibration_due':
+        if (!value) msg = ''
+        else if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value))) msg = 'Use date picker (YYYY-MM-DD)'
+        break
+      default:
+        msg = ''
+    }
+    setFieldErrors(prev => ({ ...prev, [name]: msg }))
+    return msg
+  }
+
   const onFormChange = (e) => {
     const { name, value } = e.target
     setForm(f => ({...f, [name]: value}))
+    validateField(name, value)
   }
 
   const onAdd = async (e) => {
     e.preventDefault()
     setAddErr('')
-    if (!form.name_of_the_equipment.trim() || !form.idfn_no.trim()) {
-      setAddErr('Equipment name and IDFN are required.')
+    setAddSuccess('')
+    // Validate all fields and block submit if invalid
+    const errors = {}
+    Object.keys(form).forEach((k) => {
+      const m = validateField(k, form[k] ?? '')
+      if (m) errors[k] = m
+    })
+    if (!form.name_of_the_equipment.trim()) errors['name_of_the_equipment'] = 'Required (text)'
+    if (!form.idfn_no.trim()) errors['idfn_no'] = 'Required (text)'
+    if (Object.keys(errors).length) {
+      setFieldErrors(prev => ({ ...prev, ...errors }))
+      setAddErr('Please fix the highlighted fields. Datatype hints are shown above each field.')
       return
     }
     try {
@@ -93,8 +142,12 @@ export default function EquipmentTable({ mode = 'admin' }) {
       })
       setPage(0)
       fetchData()
+      setAddSuccess('Tool saved successfully.')
+      message.success('Tool added successfully')
+      setTimeout(()=>setAddSuccess(''), 2500)
     } catch (err) {
       setAddErr(typeof err?.message === 'string' ? err.message : 'Failed to add tool')
+      message.error(typeof err?.message === 'string' ? err.message : 'Failed to add tool')
     } finally {
       setAddLoading(false)
     }
@@ -113,72 +166,145 @@ export default function EquipmentTable({ mode = 'admin' }) {
     }
   }
 
-  const onRequest = async (gauge_id) => {
-    const quantity = Number(qty[gauge_id] || 1)
-    if (!quantity || quantity < 1) {
-      setError('Please enter a valid quantity (>=1).')
-      return
-    }
+  const onRequest = async (row) => {
     try {
-      const res = await fetch('/requests', {
+      if (!row) { setError('Row not found.'); return }
+      const payload = {
+        gauge_id: Number(row.gauge_id),
+        name_of_the_equipment: row.name_of_the_equipment,
+        idfn_no: row.idfn_no,
+        location: row.location || null,
+        make_model: row.make_model || null,
+        quantity: 1,
+        requested_by: requestedBy || null,
+      }
+      // Try new Gauge Tracker endpoint first
+      const res = await fetch('/gauge-tracker', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gauge_id, quantity, requested_by: requestedBy || null })
+        body: JSON.stringify(payload)
       })
       if (!res.ok) {
-        const txt = await res.text(); throw new Error(txt || 'Failed to request tool')
+        // Fallback to legacy /requests endpoint
+        const fallback = await fetch('/requests', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gauge_id: Number(row.gauge_id), quantity: 1, requested_by: requestedBy || null })
+        })
+        if (!fallback.ok) {
+          const raw = await fallback.text()
+          try {
+            const err = JSON.parse(raw)
+            const msg = err?.detail || err?.message || raw || 'Failed to save request'
+            throw new Error(msg)
+          } catch {
+            const msg = raw || 'Failed to save request'
+            throw new Error(msg)
+          }
+        }
+        message.success('Request submitted')
+        return
       }
-      // optional: show toast/success
-      setQty(prev => ({ ...prev, [gauge_id]: '' }))
+      message.success('Request saved to Gauge Tracker')
     } catch (err) {
-      setError(typeof err?.message === 'string' ? err.message : 'Failed to request tool')
+      const msg = typeof err?.message === 'string' ? err.message : 'Failed to save request'
+      setError(msg)
+      try { message.error(msg) } catch {}
     }
   }
 
-  const cols = useMemo(() => [
-    { key: 'gauge_id', label: 'Gauge ID' },
-    { key: 'name_of_the_equipment', label: 'Equipment' },
-    { key: 'location', label: 'Location' },
-    { key: 'make_model', label: 'Make/Model' },
-    { key: 'idfn_no', label: 'IDFN' },
-    { key: 'date_of_last_calibration', label: 'Last Cal.' },
-    { key: 'calibration_due', label: 'Due' },
-  ], [])
+  const columns = useMemo(() => {
+    const base = [
+      { title: 'Gauge ID', dataIndex: 'gauge_id', key: 'gauge_id', width: 110, sorter: (a,b)=>a.gauge_id-b.gauge_id },
+      { title: 'Equipment', dataIndex: 'name_of_the_equipment', key: 'name_of_the_equipment', ellipsis: true, sorter: (a,b)=>String(a.name_of_the_equipment||'').localeCompare(String(b.name_of_the_equipment||'')) },
+      { title: 'Location', dataIndex: 'location', key: 'location', ellipsis: true, width: 140, sorter: (a,b)=>String(a.location||'').localeCompare(String(b.location||'')) },
+      { title: 'Make/Model', dataIndex: 'make_model', key: 'make_model', ellipsis: true, width: 160, sorter: (a,b)=>String(a.make_model||'').localeCompare(String(b.make_model||'')) },
+      { title: 'IDFN', dataIndex: 'idfn_no', key: 'idfn_no', width: 140, ellipsis: true, sorter: (a,b)=>String(a.idfn_no||'').localeCompare(String(b.idfn_no||'')) },
+      { title: 'Last Cal.', dataIndex: 'date_of_last_calibration', key: 'date_of_last_calibration', width: 140, sorter:(a,b)=>new Date(a.date_of_last_calibration||0)-new Date(b.date_of_last_calibration||0), render:(v)=> v ? new Date(v).toLocaleDateString() : '' },
+      { title: 'Due', dataIndex: 'calibration_due', key: 'calibration_due', width: 140, sorter:(a,b)=>new Date(a.calibration_due||0)-new Date(b.calibration_due||0), render:(v)=> v ? new Date(v).toLocaleDateString() : '' },
+    ]
+    const actionCol = mode === 'admin'
+      ? {
+          title: 'Actions', key: 'actions', fixed: 'right', align: 'right',
+          render: (_, row) => (
+            <Space>
+              <Button danger onClick={() => onDelete(row.gauge_id)}>Delete</Button>
+            </Space>
+          )
+        }
+      : {
+          title: 'Request', key: 'request', fixed: 'right', align: 'right',
+          render: (_, row) => (
+            <Space>
+              <Button type="primary" onClick={() => onRequest(row)}>Request</Button>
+            </Space>
+          )
+        }
+    return [...base, actionCol]
+  }, [mode])
 
   return (
     <div>
       <h2>Equipment Used for Calibration</h2>
 
-      <div className="actions" style={{marginBottom: 12, gap: 8}}>
-        <form onSubmit={onSearch} className="actions" style={{flex:1, gap:8}}>
-          <input className="input" placeholder="Search by name, IDFN or location" value={q} onChange={(e)=>setQ(e.target.value)} />
-          <button className="btn" type="submit" disabled={loading}>Search</button>
-        </form>
-        {mode === 'admin' ? (
-          <button className="btn" type="button" onClick={()=>setAdding(v=>!v)}>{adding ? 'Close' : 'Add Tool'}</button>
-        ) : (
-          <div className="field" style={{minWidth:240}}>
-            <label className="label">Requested By (optional)</label>
-            <input className="input" placeholder="Your name / ID" value={requestedBy} onChange={(e)=>setRequestedBy(e.target.value)} />
-          </div>
-        )}
-      </div>
+      {/* Operator view: auto-uses logged-in username; no manual input */}
 
       {mode === 'admin' && adding && (
         <form onSubmit={onAdd} style={{border:'1px solid rgba(0,0,0,0.08)', padding:16, borderRadius:12, marginBottom:12, background:'var(--card)'}}>
           <div style={{display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:12}}>
-            <div className="field"><label className="label">Equipment Name*</label><input className="input" name="name_of_the_equipment" value={form.name_of_the_equipment} onChange={onFormChange} /></div>
-            <div className="field"><label className="label">IDFN*</label><input className="input" name="idfn_no" value={form.idfn_no} onChange={onFormChange} /></div>
-            <div className="field"><label className="label">Location</label><input className="input" name="location" value={form.location} onChange={onFormChange} /></div>
-            <div className="field"><label className="label">Make/Model</label><input className="input" name="make_model" value={form.make_model} onChange={onFormChange} /></div>
-            <div className="field"><label className="label">Receipt Date</label><input className="input" type="date" name="receipt_date" value={form.receipt_date} onChange={onFormChange} /></div>
-            <div className="field"><label className="label">Overall Measurement Uncertainty</label><input className="input" name="overall_measurement_uncertainty" value={form.overall_measurement_uncertainty} onChange={onFormChange} /></div>
-            <div className="field"><label className="label">Calibration Freq (months)</label><input className="input" name="calibration_freq_months" value={form.calibration_freq_months} onChange={onFormChange} /></div>
-            <div className="field"><label className="label">Date of Last Calibration</label><input className="input" type="date" name="date_of_last_calibration" value={form.date_of_last_calibration} onChange={onFormChange} /></div>
-            <div className="field"><label className="label">Calibration Due</label><input className="input" type="date" name="calibration_due" value={form.calibration_due} onChange={onFormChange} /></div>
-            <div className="field"><label className="label">PCR Number</label><input className="input" name="pcr_number" value={form.pcr_number} onChange={onFormChange} /></div>
+            <div className="field">
+              <label className="label">Equipment Name* (text)</label>
+              {fieldErrors.name_of_the_equipment && <div className="error">{fieldErrors.name_of_the_equipment}</div>}
+              <input className="input" name="name_of_the_equipment" value={form.name_of_the_equipment} onChange={onFormChange} />
+            </div>
+            <div className="field">
+              <label className="label">IDFN* (text)</label>
+              {fieldErrors.idfn_no && <div className="error">{fieldErrors.idfn_no}</div>}
+              <input className="input" name="idfn_no" value={form.idfn_no} onChange={onFormChange} />
+            </div>
+            <div className="field">
+              <label className="label">Location (text)</label>
+              {fieldErrors.location && <div className="error">{fieldErrors.location}</div>}
+              <input className="input" name="location" value={form.location} onChange={onFormChange} />
+            </div>
+            <div className="field">
+              <label className="label">Make/Model (text)</label>
+              {fieldErrors.make_model && <div className="error">{fieldErrors.make_model}</div>}
+              <input className="input" name="make_model" value={form.make_model} onChange={onFormChange} />
+            </div>
+            <div className="field">
+              <label className="label">Receipt Date (date YYYY-MM-DD)</label>
+              {fieldErrors.receipt_date && <div className="error">{fieldErrors.receipt_date}</div>}
+              <input className="input" type="date" name="receipt_date" value={form.receipt_date} onChange={onFormChange} />
+            </div>
+            <div className="field">
+              <label className="label">Overall Measurement Uncertainty (text)</label>
+              {fieldErrors.overall_measurement_uncertainty && <div className="error">{fieldErrors.overall_measurement_uncertainty}</div>}
+              <input className="input" name="overall_measurement_uncertainty" value={form.overall_measurement_uncertainty} onChange={onFormChange} />
+            </div>
+            <div className="field">
+              <label className="label">Calibration Freq (months) (number)</label>
+              {fieldErrors.calibration_freq_months && <div className="error">{fieldErrors.calibration_freq_months}</div>}
+              <input className="input" type="number" min="0" step="1" name="calibration_freq_months" value={form.calibration_freq_months} onChange={onFormChange} />
+            </div>
+            <div className="field">
+              <label className="label">Date of Last Calibration (date YYYY-MM-DD)</label>
+              {fieldErrors.date_of_last_calibration && <div className="error">{fieldErrors.date_of_last_calibration}</div>}
+              <input className="input" type="date" name="date_of_last_calibration" value={form.date_of_last_calibration} onChange={onFormChange} />
+            </div>
+            <div className="field">
+              <label className="label">Calibration Due (date YYYY-MM-DD)</label>
+              {fieldErrors.calibration_due && <div className="error">{fieldErrors.calibration_due}</div>}
+              <input className="input" type="date" name="calibration_due" value={form.calibration_due} onChange={onFormChange} />
+            </div>
+            <div className="field">
+              <label className="label">PCR Number (digits only)</label>
+              {fieldErrors.pcr_number && <div className="error">{fieldErrors.pcr_number}</div>}
+              <input className="input" type="number" inputMode="numeric" pattern="[0-9]*" name="pcr_number" value={form.pcr_number} onChange={onFormChange} />
+            </div>
           </div>
           {addErr && <div className="error" style={{marginTop:8}}>{addErr}</div>}
+          {addSuccess && <div style={{marginTop:8, color:'#22c55e', fontSize:13}}>{addSuccess}</div>}
           <div className="actions" style={{marginTop:12}}>
             <button className="btn" type="submit" disabled={addLoading}>{addLoading ? 'Saving...' : 'Save Tool'}</button>
           </div>
@@ -188,48 +314,47 @@ export default function EquipmentTable({ mode = 'admin' }) {
       {error && <div className="error" style={{marginBottom: 8}}>{error}</div>}
 
       <div style={{overflowX:'auto', border:"1px solid rgba(0,0,0,0.06)", borderRadius:12}}>
-        <table style={{width:'100%', borderCollapse:'separate', borderSpacing:0}}>
-          <thead>
-            <tr>
-              {cols.map(c => (
-                <th key={c.key} style={{textAlign:'left', padding:'12px', background:'var(--card)', color:'var(--text)', position:'sticky', top:0}}>{c.label}</th>
-              ))}
-              <th style={{textAlign:'right', padding:'12px', background:'var(--card)', position:'sticky', top:0}}>{mode === 'admin' ? 'Actions' : 'Request'}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={cols.length + 1} style={{padding:16}}>Loading...</td></tr>
-            ) : items.length === 0 ? (
-              <tr><td colSpan={cols.length + 1} style={{padding:16}}>No equipment found.</td></tr>
-            ) : (
-              items.map((row) => (
-                <tr key={row.gauge_id}>
-                  {cols.map(c => (
-                    <td key={c.key} style={{padding:'10px 12px', borderTop:'1px solid rgba(0,0,0,0.06)'}}>
-                      {row[c.key] ?? ''}
-                    </td>
-                  ))}
-                  <td style={{padding:'10px 12px', borderTop:'1px solid rgba(0,0,0,0.06)', textAlign:'right'}}>
-                    {mode === 'admin' ? (
-                      <button className="btn" style={{background:'#ef4444'}} type="button" onClick={()=>onDelete(row.gauge_id)}>Delete</button>
-                    ) : (
-                      <div style={{display:'inline-flex', gap:8, alignItems:'center'}}>
-                        <input className="input" style={{width:90}} type="number" min="1" placeholder="Qty" value={qty[row.gauge_id] ?? ''} onChange={(e)=>setQty(p=>({...p, [row.gauge_id]: e.target.value}))} />
-                        <button className="btn" type="button" onClick={()=>onRequest(row.gauge_id)}>Request</button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+        <Table
+          columns={columns}
+          dataSource={items}
+          loading={loading}
+          pagination={false}
+          scroll={{ x: 1000 }}
+          bordered
+          size="middle"
+          sticky
+          className="ant-table-striped"
+          locale={{ emptyText: 'No equipment found' }}
+          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+          title={() => (
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+              <Space>
+                <Input.Search
+                  allowClear
+                  placeholder="Search by name, IDFN or location"
+                  value={q}
+                  onChange={(e)=>setQ(e.target.value)}
+                  onSearch={() => { setPage(0); fetchData() }}
+                  enterButton
+                  style={{minWidth:320}}
+                />
+                <Button icon={<ReloadOutlined />} onClick={fetchData}>Refresh</Button>
+              </Space>
+              {mode === 'admin' && (
+                <Button type="primary" icon={<PlusOutlined />} onClick={()=>setAdding(v=>!v)}>
+                  {adding ? 'Close' : 'Add Tool'}
+                </Button>
+              )}
+            </div>
+          )}
+        />
       </div>
 
       <div className="actions" style={{marginTop: 12}}>
-        <button className="btn" type="button" disabled={loading || page===0} onClick={()=>setPage(p=>Math.max(0,p-1))}>Prev</button>
-        <button className="btn" type="button" disabled={loading || items.length < limit} onClick={()=>setPage(p=>p+1)}>Next</button>
+        <Space>
+          <Button disabled={loading || page===0} onClick={()=>setPage(p=>Math.max(0,p-1))}>Prev</Button>
+          <Button disabled={loading || items.length < limit} type="primary" onClick={()=>setPage(p=>p+1)}>Next</Button>
+        </Space>
       </div>
     </div>
   )

@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Form, Input, Button, Typography, Alert } from 'antd'
 
 export default function App() {
   const [username, setUsername] = useState('')
@@ -11,7 +12,7 @@ export default function App() {
   const navigate = useNavigate()
 
   async function handleSubmit(e) {
-    e.preventDefault()
+    if (e?.preventDefault) e.preventDefault()
     setError('')
     setMessage('')
     if (!username.trim() || !password) {
@@ -23,18 +24,42 @@ export default function App() {
       const res = await fetch('/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify({ username: username.trim(), password: String(password).trim() })
       })
       if (!res.ok) {
-        const txt = await res.text()
-        throw new Error(txt || 'Login failed')
+        // try to parse structured error first
+        try {
+          const errJson = await res.json()
+          const msg = errJson?.detail || errJson?.message || 'Login failed'
+          throw new Error(msg)
+        } catch {
+          const txt = await res.text()
+          throw new Error(txt || 'Login failed')
+        }
       }
       const data = await res.json()
       if (data && data.success) {
         const role = (data.user?.role ?? data.role ?? (Array.isArray(data.user?.roles) ? data.user.roles[0] : undefined) ?? 'user').toString().toLowerCase()
         setMessage(`Welcome (${role})!`)
         // Persist basic auth view state if needed
-        try { localStorage.setItem('role', role) } catch {}
+        try {
+          localStorage.setItem('role', role)
+          // Persist user id for fetching profile later
+          const userId = (data.user?.id ?? data.id ?? '').toString()
+          if (userId) localStorage.setItem('userId', userId)
+          // Persist the username as well for header display. Try common fields and fall back to input value.
+          const persistedUsername = (
+            data.user?.username ??
+            data.user?.userName ??
+            data.user?.name ??
+            data.username ??
+            data.userName ??
+            data.name ??
+            username ??
+            ''
+          )?.toString()?.trim()
+          localStorage.setItem('username', persistedUsername || (username?.toString()?.trim() || ''))
+        } catch {}
         // Navigate based on role
         if (role === 'admin') {
           navigate('/admin')
@@ -51,57 +76,52 @@ export default function App() {
     }
   }
 
-  function handleForgot(e) {
-    e.preventDefault()
-    alert('Forgot password flow coming soon.')
-  }
+  
 
   return (
       <div className="container">
         <div className="card">
-          <div className="brand">
-            <div className="brand-logo" aria-hidden="true"></div>
-            <h1>CMTI</h1>
+          <div className="brand" style={{ justifyContent: 'center' }}>
+            <img src="/download.png" alt="CMTI logo" style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: '9999px' }} />
           </div>
 
         <div id="root-inner">
-          <form onSubmit={handleSubmit} noValidate>
-            <p className="subtle">Sign in to continue</p>
+          <Form layout="vertical" onSubmitCapture={handleSubmit} noValidate>
+            <Typography.Paragraph className="subtle">Sign in to continue</Typography.Paragraph>
 
-            <div className="field">
-              <label htmlFor="username" className="label">Username</label>
-              <input
+            <Form.Item label="Username" required>
+              <Input
                 id="username"
-                type="text"
-                className="input"
                 placeholder="Enter your username"
                 autoComplete="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
               />
-            </div>
+            </Form.Item>
 
-            <div className="field">
-              <label htmlFor="password" className="label">Password</label>
-              <input
+            <Form.Item label="Password" required>
+              <Input.Password
                 id="password"
-                type="password"
-                className="input"
                 placeholder="Enter your password"
                 autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
-            </div>
+            </Form.Item>
 
-            <div className="error" role="alert" aria-live="polite">{error}</div>
-            {message && <div style={{color:'#86efac',fontSize:'13px',minHeight:'18px'}}>{message}</div>}
+            {error && (
+              <Alert type="error" message={error} showIcon style={{ marginBottom: 12 }} />
+            )}
+            {message && (
+              <Alert type="success" message={message} showIcon style={{ marginBottom: 12 }} />
+            )}
 
-            <div className="actions">
-              <button type="submit" className="btn" disabled={loading}>{loading ? 'Logging in...' : 'Login'}</button>
-              <a href="#" className="link" onClick={handleForgot}>Forgot password?</a>
+            <div className="actions" style={{ display:'flex', gap:12, alignItems:'center', justifyContent:'center' }}>
+              <Button type="primary" htmlType="submit" loading={loading} style={{ minWidth: 120 }}>
+                {loading ? 'Logging in...' : 'Login'}
+              </Button>
             </div>
-          </form>
+          </Form>
         </div>
 
           <p className="footer">© <span>{year}</span> CMTI. All rights reserved.</p>
@@ -109,3 +129,4 @@ export default function App() {
       </div>
   )
 }
+

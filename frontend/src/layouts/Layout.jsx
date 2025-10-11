@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import { Outlet, Link } from 'react-router-dom'
+import { Outlet, Link, useLocation } from 'react-router-dom'
+import { HomeOutlined } from '@ant-design/icons'
 
 export default function Layout() {
+  const location = useLocation()
+  const isLogin = location.pathname === '/'
   const getInitialTheme = () => {
     const saved = localStorage.getItem('theme')
     if (saved === 'light' || saved === 'dark') return saved
@@ -41,10 +44,15 @@ export default function Layout() {
         )}
       </button>
 
-      {/* Optional simple top-left nav when on dashboards */}
-      <div style={{ position: 'fixed', top: 16, left: 16 }}>
-        <Link to="/" className="link">Home</Link>
-      </div>
+      {/* Optional simple top-left nav when NOT on the login page */}
+      {!isLogin && (
+        <div style={{ position: 'fixed', top: 16, left: 16 }}>
+          <Link to="/" className="link" aria-label="Home" title="Home" style={{display:'inline-flex',alignItems:'center',gap:6}}>
+            <HomeOutlined />
+            <span>Home</span>
+          </Link>
+        </div>
+      )}
 
       <Outlet />
     </>

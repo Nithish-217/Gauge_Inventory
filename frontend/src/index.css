@@ -41,7 +41,7 @@ body{
 .container{height:100%;display:grid;place-items:center;padding:24px}
 .card{width:100%;max-width:400px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));backdrop-filter:saturate(120%) blur(8px);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:28px;box-shadow:0 10px 30px rgba(0,0,0,0.45)}
 .brand{display:flex;align-items:center;gap:12px;margin-bottom:12px}
-.brand-logo{width:36px;height:36px;border-radius:8px;background:linear-gradient(135deg,var(--primary),#22d3ee);box-shadow:0 6px 16px rgba(37,99,235,0.35)}
+.brand-logo{width:36px;height:36px;border-radius:9999px;background:#ffffff;box-shadow:0 6px 16px rgba(37,99,235,0.35);background-image:url('/download.png');background-size:cover;background-position:center;background-repeat:no-repeat;border:1px solid rgba(0,0,0,0.08)}
 h1{font-size:22px;line-height:1.25;margin:0;letter-spacing:.3px}
 .subtle{color:var(--muted);font-size:14px;margin-bottom:22px}
 .field{margin-bottom:14px}
@@ -82,18 +82,18 @@ h1{font-size:22px;line-height:1.25;margin:0;letter-spacing:.3px}
 
 /* Admin layout */
 .admin-layout{display:flex;min-height:100vh;background:var(--bg);color:var(--text)}
-.sidebar{width:260px;background:linear-gradient(180deg,#243b55 0%, #141e30 100%);border-right:1px solid rgba(0,0,0,0.08);padding:16px;position:sticky;top:0;height:100vh}
-.sidebar-header{display:flex;align-items:center;gap:10px;margin-bottom:16px}
-.cmti-logo{width:56px;height:56px;border-radius:9999px;background:#ffffff;display:flex;align-items:center;justify-content:center;color:#1e3a8a;font-weight:900;letter-spacing:.6px;box-shadow:0 10px 22px rgba(0,0,0,0.35);border:2px solid #60a5fa;
-  background-image:url('/cmti.png');background-size:70% auto;background-position:center;background-repeat:no-repeat;
+.sidebar{width:260px;flex:0 0 260px;background:linear-gradient(180deg,#243b55 0%, #141e30 100%);border-right:1px solid rgba(0,0,0,0.08);padding:16px;position:sticky;top:0;height:100vh}
+.sidebar-header{display:flex;flex-direction:column;align-items:center;gap:8px;margin-bottom:16px;text-align:center}
+.cmti-logo{width:72px;height:72px;border-radius:9999px;background:#ffffff;display:flex;align-items:center;justify-content:center;color:#1e3a8a;font-weight:900;letter-spacing:.6px;box-shadow:0 10px 22px rgba(0,0,0,0.35);border:2px solid #60a5fa;
+  background-image:url('/download.png');background-size:60% auto;background-position:center;background-repeat:no-repeat;
 }
-.sidebar-title{font-weight:700;color:#e5e7eb}
-.sidebar-title{font-weight:700}
+.sidebar-title{font-weight:800;color:#e5e7eb;letter-spacing:.4px;text-transform:uppercase}
 .menu{display:flex;flex-direction:column;gap:8px;margin-top:8px}
-.menu-item{padding:10px 12px;border-radius:12px;text-decoration:none;color:#e5e7eb;border:1px solid transparent;display:flex;align-items:center;gap:10px}
-.menu-item:hover{background:rgba(255,255,255,0.06)}
-.menu-item.active{background:linear-gradient(180deg, rgba(147,197,253,0.35), rgba(99,102,241,0.35)); border-color: rgba(147,197,253,0.4)}
-.admin-content{flex:1;padding:24px;background:var(--panel)}
+.menu-item{padding:12px 14px;border-radius:12px;text-decoration:none;color:#e5e7eb;border:1px solid transparent;display:flex;align-items:center;gap:10px;transition: background .2s ease, border-color .2s ease, box-shadow .2s ease, transform .12s ease}
+.menu-item:hover{background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.12);box-shadow:0 8px 18px rgba(0,0,0,0.18);transform:translateX(2px)}
+.menu-item:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}
+.menu-item.active{background:linear-gradient(180deg, rgba(147,197,253,0.35), rgba(99,102,241,0.35)); border-color: rgba(147,197,253,0.5); box-shadow:0 10px 22px rgba(30,64,175,0.25)}
+.admin-content{flex:1;min-width:0;padding:24px;background:var(--panel)}
 
 /* Top bar */
 .topbar{height:56px;background:linear-gradient(180deg, rgba(0,0,0,0.08), rgba(0,0,0,0.02));border-bottom:1px solid rgba(0,0,0,0.06);display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-top-left-radius:12px}
@@ -101,9 +101,21 @@ h1{font-size:22px;line-height:1.25;margin:0;letter-spacing:.3px}
 .logout-btn{padding:8px 12px;border-radius:10px;border:1px solid rgba(0,0,0,0.1);background:#ef4444;color:#fff;cursor:pointer;font-weight:600}
 .logout-btn:hover{filter:brightness(1.05)}
 
+/* Ant Design table enhancements */
+.ant-table-striped .ant-table-thead > tr > th{
+  background: linear-gradient(180deg, rgba(0,0,0,0.04), rgba(0,0,0,0.02));
+  font-weight: 600;
+}
+.ant-table-striped .table-row-light td{ background: rgba(0,0,0,0.0); }
+.ant-table-striped .table-row-dark td{ background: rgba(0,0,0,0.03); }
+:root[data-theme="dark"] .ant-table-striped .ant-table-thead > tr > th{ background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03)); }
+:root[data-theme="dark"] .ant-table-striped .table-row-light td{ background: rgba(255,255,255,0.02); }
+:root[data-theme="dark"] .ant-table-striped .table-row-dark td{ background: rgba(255,255,255,0.05); }
+.ant-table-striped .ant-table-title{ padding: 12px 16px; }
+
 /* Icon button (Home) */
-.icon-btn{height:36px;min-width:36px;display:inline-flex;align-items:center;justify-content:center;border-radius:9999px;border:1px solid rgba(0,0,0,0.1);background:rgba(255,255,255,0.65);color:#111827;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.12)}
-.icon-btn:hover{filter:brightness(1.03)}
+.icon-btn{height:36px;min-width:36px;display:inline-flex;align-items:center;justify-content:center;border-radius:9999px;border:1px solid rgba(0,0,0,0.1);background:rgba(255,255,255,0.65);color:#111827;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.12);transition: transform .12s ease, box-shadow .2s ease, filter .2s ease}
+.icon-btn:hover{filter:brightness(1.03);transform:translateY(-1px);box-shadow:0 8px 20px rgba(0,0,0,0.2)}
 .icon-btn:active{transform:translateY(1px)}
 :root[data-theme="dark"] .icon-btn{background:rgba(255,255,255,0.08);color:#e5e7eb;border-color:rgba(255,255,255,0.12)}
 
@@ -116,6 +128,8 @@ h1{font-size:22px;line-height:1.25;margin:0;letter-spacing:.3px}
 /* Light/Dark specifics */
 :root[data-theme="dark"] .sidebar{background:linear-gradient(180deg,#0f172a 0%, #0b1324 100%);border-right:1px solid rgba(255,255,255,0.08)}
 :root[data-theme="dark"] .menu-item{color:#e5e7eb}
+:root[data-theme="dark"] .menu-item:hover{background: rgba(255,255,255,0.10); border-color: rgba(255,255,255,0.16)}
+:root[data-theme="dark"] .menu-item.active{background:linear-gradient(180deg, rgba(59,130,246,0.25), rgba(99,102,241,0.25)); border-color: rgba(147,197,253,0.55)}
 :root[data-theme="dark"] .topbar{background:linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));border-bottom:1px solid rgba(255,255,255,0.06)}
 :root[data-theme="dark"] .logout-btn{border-color:rgba(255,255,255,0.12)}
 :root[data-theme="dark"] .stat-card{background:#0b1324;border:1px solid rgba(255,255,255,0.08);box-shadow:0 10px 28px rgba(0,0,0,0.55)}

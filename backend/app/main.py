@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from datetime import datetime
 from sqlalchemy import text
 
 from .database import get_db
@@ -27,8 +28,14 @@ def health():
 
 @app.post("/auth/login", response_model=schemas.LoginResponse)
 def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
-    # Find user by username
-    user = db.query(models.User).filter(models.User.username == payload.username).first()
+    # Normalize provided username (trim spaces)
+    provided_username = (payload.username or "").strip()
+    # Find user by username (case-insensitive match)
+    user = (
+        db.query(models.User)
+        .filter(models.User.username.ilike(provided_username))
+        .first()
+    )
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
@@ -67,6 +74,41 @@ def create_user(payload: schemas.CreateUserRequest, db: Session = Depends(get_db
     return user
 
 
+@app.get("/users", response_model=list[schemas.UserPublic])
+def list_users(db: Session = Depends(get_db)):
+    users = db.query(models.User).order_by(models.User.id.desc()).all()
+    return users
+
+
+@app.get("/users/{user_id}", response_model=schemas.UserPublic)
+def get_user(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+@app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_user(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    db.delete(user)
+    db.commit()
+    return None
+
+
+@app.post("/users/{user_id}/password")
+def change_password(user_id: int, payload: schemas.ChangePasswordRequest, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.password_hash = get_password_hash(payload.new_password)
+    db.add(user)
+    db.commit()
+    return {"success": True}
+
+
 @app.get("/equipment")
 def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: Session = Depends(get_db)):
     limit = max(1, min(limit, 200))
@@ -103,7 +145,69 @@ def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: S
 
 @app.post("/equipment", response_model=schemas.EquipmentPublic, status_code=status.HTTP_201_CREATED)
 def create_equipment(payload: schemas.EquipmentCreate, db: Session = Depends(get_db)):
-    # Insert record if idfn_no not duplicate; allow duplicates depending on your DB rules
+    # Ensure table exists (first-run/dev safety). In production, prefer migrations.
+    db.execute(text(
+        """
+        CREATE TABLE IF NOT EXISTS public.equipment_used_for_calibration (
+          gauge_id SERIAL PRIMARY KEY,
+          name_of_the_equipment TEXT NOT NULL,
+          location TEXT,
+          receipt_date DATE,
+          make_model TEXT,
+          idfn_no TEXT NOT NULL,
+          overall_measurement_uncertainty TEXT,
+          calibration_freq_months INTEGER,
+          date_of_last_calibration DATE,
+          calibration_due DATE,
+          pcr_number BIGINT
+        )
+        """
+    ))
+
+    # Try to widen existing pcr_number column to BIGINT in case an earlier run created it as INTEGER
+    try:
+        db.execute(text("ALTER TABLE public.equipment_used_for_calibration ALTER COLUMN pcr_number TYPE BIGINT USING pcr_number::bigint"))
+    except Exception:
+        # ignore if already BIGINT or cannot alter
+        pass
+
+    # Normalize/validate payload
+    def to_iso_date(value: str | None) -> str | None:
+        if not value:
+            return None
+        value = value.strip()
+        # Accept common formats
+        fmts = ["%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y", "%m-%d-%Y"]
+        for fmt in fmts:
+            try:
+                return datetime.strptime(value, fmt).date().isoformat()
+            except ValueError:
+                continue
+        # As a final attempt, try letting Postgres parse via ISO-compatible string
+        raise HTTPException(status_code=400, detail=f"Invalid date format: '{value}'. Use YYYY-MM-DD or DD-MM-YYYY.")
+
+    data = payload.model_dump()
+    # Coerce/clean fields
+    for k in ("receipt_date", "date_of_last_calibration", "calibration_due"):
+        data[k] = to_iso_date(data.get(k)) if data.get(k) else None
+    # calibration_freq_months should be int or null
+    if data.get("calibration_freq_months") in ("", None):
+        data["calibration_freq_months"] = None
+    else:
+        try:
+            data["calibration_freq_months"] = int(data["calibration_freq_months"])  # type: ignore
+        except Exception:
+            raise HTTPException(status_code=400, detail="calibration_freq_months must be a number")
+    # pcr_number may be large; allow None
+    if data.get("pcr_number") in ("", None):
+        data["pcr_number"] = None
+    else:
+        try:
+            data["pcr_number"] = int(data["pcr_number"])  # type: ignore
+        except Exception:
+            raise HTTPException(status_code=400, detail="pcr_number must be a whole number")
+
+    # Insert record
     cols = [
         "name_of_the_equipment",
         "location",
@@ -116,17 +220,45 @@ def create_equipment(payload: schemas.EquipmentCreate, db: Session = Depends(get
         "calibration_due",
         "pcr_number",
     ]
-    colnames = ", ".join(cols)
-    placeholders = ", ".join([":" + c for c in cols])
+    # Build INSERT with explicit casts for date/int/bigint columns
     sql = text(
-        f"""
-        INSERT INTO public.equipment_used_for_calibration ({colnames})
-        VALUES ({placeholders})
+        """
+        INSERT INTO public.equipment_used_for_calibration (
+          name_of_the_equipment,
+          location,
+          receipt_date,
+          make_model,
+          idfn_no,
+          overall_measurement_uncertainty,
+          calibration_freq_months,
+          date_of_last_calibration,
+          calibration_due,
+          pcr_number
+        ) VALUES (
+          :name_of_the_equipment,
+          :location,
+          CAST(:receipt_date AS DATE),
+          :make_model,
+          :idfn_no,
+          :overall_measurement_uncertainty,
+          CAST(:calibration_freq_months AS INTEGER),
+          CAST(:date_of_last_calibration AS DATE),
+          CAST(:calibration_due AS DATE),
+          CAST(:pcr_number AS BIGINT)
+        )
         RETURNING gauge_id, name_of_the_equipment, location, make_model, idfn_no, date_of_last_calibration, calibration_due
         """
     )
-    row = db.execute(sql, payload.model_dump()).mappings().first()
-    db.commit()
+    try:
+        row = db.execute(sql, data).mappings().first()
+        db.commit()
+    except IntegrityError as ie:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Duplicate or integrity error while saving equipment")
+    except Exception as e:
+        db.rollback()
+        # Return a readable message for common PG errors
+        raise HTTPException(status_code=400, detail=f"Insert error: {str(e)}")
     if not row:
         raise HTTPException(status_code=500, detail="Insert failed")
     return row
@@ -157,7 +289,7 @@ def create_request(payload: schemas.RequestCreate, db: Session = Depends(get_db)
         """
     ))
 
-    row = db.execute(
+    result = db.execute(
         text(
             """
             INSERT INTO public.tool_requests (gauge_id, quantity, requested_by)
@@ -170,6 +302,219 @@ def create_request(payload: schemas.RequestCreate, db: Session = Depends(get_db)
             "quantity": payload.quantity,
             "requested_by": payload.requested_by,
         }
-    ).first()
+    )
+    new_request_id = result.scalar()
     db.commit()
-    return {"success": True, "id": row.id}
+
+    # Mirror into gauge_tracker for admin visibility
+    try:
+        # Ensure tracker table exists
+        db.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS public.gauge_tracker (
+              id SERIAL PRIMARY KEY,
+              gauge_id INTEGER NOT NULL,
+              name_of_the_equipment TEXT NOT NULL,
+              idfn_no TEXT NOT NULL,
+              location TEXT,
+              make_model TEXT,
+              quantity INTEGER NOT NULL DEFAULT 1,
+              requested_by VARCHAR(100),
+              requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              status VARCHAR(20) NOT NULL DEFAULT 'requested',
+              accepted_by VARCHAR(100),
+              accepted_at TIMESTAMPTZ
+            )
+            """
+        ))
+        # Make sure columns exist if table was created earlier without them
+        try:
+            db.execute(text("ALTER TABLE public.gauge_tracker ADD COLUMN IF NOT EXISTS name_of_the_equipment TEXT"))
+            db.execute(text("ALTER TABLE public.gauge_tracker ADD COLUMN IF NOT EXISTS idfn_no TEXT"))
+            db.execute(text("ALTER TABLE public.gauge_tracker ADD COLUMN IF NOT EXISTS location TEXT"))
+            db.execute(text("ALTER TABLE public.gauge_tracker ADD COLUMN IF NOT EXISTS make_model TEXT"))
+            db.execute(text("ALTER TABLE public.gauge_tracker ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1"))
+            db.execute(text("ALTER TABLE public.gauge_tracker ADD COLUMN IF NOT EXISTS requested_by VARCHAR(100)"))
+            db.execute(text("ALTER TABLE public.gauge_tracker ADD COLUMN IF NOT EXISTS requested_at TIMESTAMPTZ DEFAULT NOW()"))
+            db.execute(text("ALTER TABLE public.gauge_tracker ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'requested'"))
+            db.execute(text("ALTER TABLE public.gauge_tracker ADD COLUMN IF NOT EXISTS accepted_by VARCHAR(100)"))
+            db.execute(text("ALTER TABLE public.gauge_tracker ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ"))
+        except Exception:
+            pass
+
+        # Fetch equipment details
+        eq = db.execute(text(
+            """
+            SELECT gauge_id, name_of_the_equipment, idfn_no, location, make_model
+            FROM public.equipment_used_for_calibration
+            WHERE gauge_id = :gid
+            """
+        ), {"gid": payload.gauge_id}).mappings().first()
+        if eq:
+            db.execute(text(
+                """
+                INSERT INTO public.gauge_tracker (
+                  gauge_id, name_of_the_equipment, idfn_no, location, make_model, quantity, requested_by
+                ) VALUES (
+                  :gauge_id, :name_of_the_equipment, :idfn_no, :location, :make_model, :quantity, :requested_by
+                )
+                """
+            ), {
+                "gauge_id": eq["gauge_id"],
+                "name_of_the_equipment": eq["name_of_the_equipment"],
+                "idfn_no": eq["idfn_no"],
+                "location": eq.get("location"),
+                "make_model": eq.get("make_model"),
+                "quantity": max(1, int(payload.quantity or 1)),
+                "requested_by": payload.requested_by,
+            })
+            db.commit()
+    except Exception:
+        # Do not fail the original request if mirroring fails
+        db.rollback()
+
+    return {"success": True, "id": int(new_request_id) if new_request_id is not None else 0}
+
+
+# Gauge Tracker
+@app.get("/gauge-tracker", response_model=list[schemas.GaugeTrackPublic])
+def list_gauge_tracks(limit: int = 100, offset: int = 0, db: Session = Depends(get_db)):
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    # Requests table to persist operator requests
+    db.execute(text(
+        """
+        CREATE TABLE IF NOT EXISTS public.gauge_requests (
+          id SERIAL PRIMARY KEY,
+          gauge_id INTEGER NOT NULL,
+          requested_by VARCHAR(100),
+          requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          status VARCHAR(20) NOT NULL DEFAULT 'requested',
+          accepted_by VARCHAR(100),
+          accepted_at TIMESTAMPTZ
+        )
+        """
+    ))
+    # Build rows by joining equipment for display and current holder from existing gauge_tracker
+    sql = text(
+        """
+        SELECT 
+          gr.id,
+          gr.gauge_id,
+          e.name_of_the_equipment,
+          e.idfn_no,
+          e.location,
+          e.make_model,
+          1 AS quantity,
+          gr.requested_by,
+          gr.requested_at,
+          gr.status,
+          CASE WHEN gt.issued_to IS NOT NULL AND gt.returned_at IS NULL THEN u.username ELSE gr.accepted_by END AS accepted_by,
+          CASE WHEN gt.issued_to IS NOT NULL AND gt.returned_at IS NULL THEN gt.issued_at ELSE gr.accepted_at END AS accepted_at
+        FROM public.gauge_requests gr
+        LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gr.gauge_id
+        LEFT JOIN public.gauge_tracker gt ON gt.gauge_id = gr.gauge_id AND gt.returned_at IS NULL
+        LEFT JOIN public.users u ON u.id = gt.issued_to
+        ORDER BY gr.id DESC
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    rows = db.execute(sql, {"limit": limit, "offset": offset}).mappings().all()
+    return list(rows)
+
+
+@app.post("/gauge-tracker", response_model=schemas.GaugeTrackPublic, status_code=status.HTTP_201_CREATED)
+def create_gauge_track(payload: schemas.GaugeTrackCreate, db: Session = Depends(get_db)):
+    # Persist operator request into gauge_requests
+    db.execute(text(
+        """
+        CREATE TABLE IF NOT EXISTS public.gauge_requests (
+          id SERIAL PRIMARY KEY,
+          gauge_id INTEGER NOT NULL,
+          requested_by VARCHAR(100),
+          requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          status VARCHAR(20) NOT NULL DEFAULT 'requested',
+          accepted_by VARCHAR(100),
+          accepted_at TIMESTAMPTZ
+        )
+        """
+    ))
+    data = payload.model_dump()
+    rec = db.execute(text(
+        """
+        INSERT INTO public.gauge_requests (gauge_id, requested_by, requested_at, status)
+        VALUES (:gauge_id, :requested_by, NOW(), 'requested')
+        RETURNING id
+        """
+    ), data).mappings().first()
+    db.commit()
+    # Return a row-shaped payload by reusing list query for that id
+    row = db.execute(text(
+        """
+        SELECT 
+          gr.id,
+          gr.gauge_id,
+          e.name_of_the_equipment,
+          e.idfn_no,
+          e.location,
+          e.make_model,
+          1 AS quantity,
+          gr.requested_by,
+          gr.requested_at,
+          gr.status,
+          NULL::varchar as accepted_by,
+          NULL::timestamptz as accepted_at
+        FROM public.gauge_requests gr
+        LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gr.gauge_id
+        WHERE gr.id = :id
+        """
+    ), {"id": rec["id"]}).mappings().first()
+    return row
+
+
+@app.post("/gauge-tracker/{track_id}/accept", response_model=schemas.GaugeTrackPublic)
+def accept_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Session = Depends(get_db)):
+    req = db.execute(text("SELECT * FROM public.gauge_requests WHERE id = :id"), {"id": track_id}).mappings().first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Tracker record not found")
+    # Block if gauge already issued to someone (holder in legacy table)
+    holder = db.execute(text(
+        """
+        SELECT u.username AS holder, gt.issued_at
+        FROM public.gauge_tracker gt
+        LEFT JOIN public.users u ON u.id = gt.issued_to
+        WHERE gt.gauge_id = :gid AND gt.returned_at IS NULL
+        LIMIT 1
+        """
+    ), {"gid": req["gauge_id"]}).mappings().first()
+    if holder and holder.get("holder"):
+        raise HTTPException(status_code=400, detail=f"Already taken by {holder.get('holder')}")
+    accepted_by = (payload.accepted_by or "").strip() or "operator"
+    db.execute(text(
+        """
+        UPDATE public.gauge_requests
+        SET status = 'accepted', accepted_by = :accepted_by, accepted_at = NOW()
+        WHERE id = :id
+        """
+    ), {"id": track_id, "accepted_by": accepted_by})
+    db.commit()
+    return list_gauge_tracks(limit=1, offset=0, db=db)[0]
+
+
+@app.post("/gauge-tracker/{track_id}/reject", response_model=schemas.GaugeTrackPublic)
+def reject_gauge_track(track_id: int, db: Session = Depends(get_db)):
+    req = db.execute(text("SELECT * FROM public.gauge_requests WHERE id = :id"), {"id": track_id}).mappings().first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Tracker record not found")
+    # If already accepted, do not allow rejection
+    if req.get("accepted_by"):
+        raise HTTPException(status_code=400, detail=f"Already taken by {req.get('accepted_by')}")
+    db.execute(text(
+        """
+        UPDATE public.gauge_requests
+        SET status = 'rejected', accepted_by = NULL, accepted_at = NULL
+        WHERE id = :id
+        """
+    ), {"id": track_id})
+    db.commit()
+    return list_gauge_tracks(limit=1, offset=0, db=db)[0]

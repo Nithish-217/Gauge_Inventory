@@ -1,5 +1,8 @@
 from pydantic import BaseModel, Field, EmailStr
-from datetime import datetime
+from datetime import datetime, date
+
+class ChangePasswordRequest(BaseModel):
+    new_password: str = Field(..., min_length=6)
 
 
 class LoginRequest(BaseModel):
@@ -50,8 +53,8 @@ class EquipmentPublic(BaseModel):
     location: str | None = None
     make_model: str | None = None
     idfn_no: str
-    date_of_last_calibration: str | None = None
-    calibration_due: str | None = None
+    date_of_last_calibration: date | None = None
+    calibration_due: date | None = None
 
 
 class RequestCreate(BaseModel):
@@ -63,3 +66,34 @@ class RequestCreate(BaseModel):
 class RequestResponse(BaseModel):
     success: bool
     id: int
+
+
+# Gauge Tracker
+class GaugeTrackCreate(BaseModel):
+    gauge_id: int
+    name_of_the_equipment: str
+    idfn_no: str
+    location: str | None = None
+    make_model: str | None = None
+    quantity: int = 1
+    requested_by: str | None = None
+
+
+class GaugeTrackPublic(BaseModel):
+    id: int
+    gauge_id: int
+    name_of_the_equipment: str
+    idfn_no: str
+    location: str | None = None
+    make_model: str | None = None
+    quantity: int
+    requested_by: str | None = None
+    requested_at: datetime
+    status: str
+    accepted_by: str | None = None
+    accepted_at: datetime | None = None
+
+
+class GaugeTrackAction(BaseModel):
+    accepted_by: str | None = None
+
