@@ -51,7 +51,7 @@ export default function AdminDashboard() {
         </div>
 
         <nav className="menu">
-          <NavLink to="create-user" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>Create User</NavLink>
+          <NavLink to="create-user" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>User Management</NavLink>
           <NavLink
             to="gauge-inventory"
             className={({isActive}) => {
