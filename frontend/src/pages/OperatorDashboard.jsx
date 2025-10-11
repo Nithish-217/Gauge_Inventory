@@ -58,6 +58,7 @@ export default function OperatorDashboard() {
             </span>
           </NavLink>
           <NavLink to="gauge-inventory" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>Gauge Inventory</NavLink>
+          <NavLink to="gauge-tracker" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>Gauge Tracker</NavLink>
           <NavLink to="calibration-report" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>Calibration Report</NavLink>
         </nav>
       </aside>

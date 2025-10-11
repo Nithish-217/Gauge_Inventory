@@ -10,6 +10,7 @@ import AdminDashboard from './pages/AdminDashboard.jsx'
 import OperatorDashboard from './pages/OperatorDashboard.jsx'
 import OperatorHome from './pages/operator/Home.jsx'
 import OperatorGaugeInventory from './pages/operator/GaugeInventory.jsx'
+import OperatorGaugeTracker from './pages/operator/GaugeTracker.jsx'
 import ToolRequest from './pages/operator/ToolRequest.jsx'
 import CalibrationReport from './pages/operator/CalibrationReport.jsx'
 import GaugeInventory from './pages/admin/GaugeInventory.jsx'
@@ -40,6 +41,7 @@ root.render(
             <Route path="operator" element={<OperatorDashboard />} >
               <Route index element={<OperatorHome />} />
               <Route path="gauge-inventory" element={<OperatorGaugeInventory />} />
+              <Route path="gauge-tracker" element={<OperatorGaugeTracker />} />
               <Route path="tool-request" element={<ToolRequest />} />
               <Route path="calibration-report" element={<CalibrationReport />} />
             </Route>

@@ -378,7 +378,7 @@ def create_request(payload: schemas.RequestCreate, db: Session = Depends(get_db)
 
 # Gauge Tracker
 @app.get("/gauge-tracker", response_model=list[schemas.GaugeTrackPublic])
-def list_gauge_tracks(limit: int = 100, offset: int = 0, db: Session = Depends(get_db)):
+def list_gauge_tracks(limit: int = 100, offset: int = 0, requested_by: str | None = None, db: Session = Depends(get_db)):
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
     # Requests table to persist operator requests
@@ -396,8 +396,19 @@ def list_gauge_tracks(limit: int = 100, offset: int = 0, db: Session = Depends(g
         """
     ))
     # Build rows by joining equipment for display and current holder from existing gauge_tracker
+    # Ensure return columns exist for consistent SELECT
+    try:
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_by VARCHAR(100)"))
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
+    except Exception:
+        pass
+    where = ""
+    params = {"limit": limit, "offset": offset}
+    if requested_by:
+        where = "WHERE gr.requested_by ILIKE :rb"
+        params["rb"] = requested_by
     sql = text(
-        """
+        f"""
         SELECT 
           gr.id,
           gr.gauge_id,
@@ -410,16 +421,19 @@ def list_gauge_tracks(limit: int = 100, offset: int = 0, db: Session = Depends(g
           gr.requested_at,
           gr.status,
           CASE WHEN gt.issued_to IS NOT NULL AND gt.returned_at IS NULL THEN u.username ELSE gr.accepted_by END AS accepted_by,
-          CASE WHEN gt.issued_to IS NOT NULL AND gt.returned_at IS NULL THEN gt.issued_at ELSE gr.accepted_at END AS accepted_at
+          CASE WHEN gt.issued_to IS NOT NULL AND gt.returned_at IS NULL THEN gt.issued_at ELSE gr.accepted_at END AS accepted_at,
+          gr.returned_by,
+          gr.returned_at
         FROM public.gauge_requests gr
         LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gr.gauge_id
         LEFT JOIN public.gauge_tracker gt ON gt.gauge_id = gr.gauge_id AND gt.returned_at IS NULL
         LEFT JOIN public.users u ON u.id = gt.issued_to
+        {where}
         ORDER BY gr.id DESC
         LIMIT :limit OFFSET :offset
         """
     )
-    rows = db.execute(sql, {"limit": limit, "offset": offset}).mappings().all()
+    rows = db.execute(sql, params).mappings().all()
     return list(rows)
 
 
@@ -490,6 +504,9 @@ def accept_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Ses
     if holder and holder.get("holder"):
         raise HTTPException(status_code=400, detail=f"Already taken by {holder.get('holder')}")
     accepted_by = (payload.accepted_by or "").strip() or "operator"
+    # Do not accept if already rejected or accepted
+    if (req.get("status") or "").lower() in ("accepted", "rejected", "returned"):
+        raise HTTPException(status_code=400, detail="Action not allowed for this status")
     db.execute(text(
         """
         UPDATE public.gauge_requests
@@ -502,19 +519,46 @@ def accept_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Ses
 
 
 @app.post("/gauge-tracker/{track_id}/reject", response_model=schemas.GaugeTrackPublic)
-def reject_gauge_track(track_id: int, db: Session = Depends(get_db)):
+def reject_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Session = Depends(get_db)):
     req = db.execute(text("SELECT * FROM public.gauge_requests WHERE id = :id"), {"id": track_id}).mappings().first()
     if not req:
         raise HTTPException(status_code=404, detail="Tracker record not found")
-    # If already accepted, do not allow rejection
-    if req.get("accepted_by"):
-        raise HTTPException(status_code=400, detail=f"Already taken by {req.get('accepted_by')}")
+    # Block if already accepted or rejected or returned
+    if (req.get("status") or "").lower() in ("accepted", "rejected", "returned"):
+        raise HTTPException(status_code=400, detail="Action not allowed for this status")
+    actor = (payload.accepted_by or "").strip() or "admin"
+    # Record who handled the rejection
     db.execute(text(
         """
         UPDATE public.gauge_requests
-        SET status = 'rejected', accepted_by = NULL, accepted_at = NULL
+        SET status = 'rejected', accepted_by = :actor, accepted_at = NOW()
         WHERE id = :id
         """
-    ), {"id": track_id})
+    ), {"id": track_id, "actor": actor})
+    db.commit()
+    return list_gauge_tracks(limit=1, offset=0, db=db)[0]
+
+@app.post("/gauge-tracker/{track_id}/return", response_model=schemas.GaugeTrackPublic)
+def return_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Session = Depends(get_db)):
+    req = db.execute(text("SELECT * FROM public.gauge_requests WHERE id = :id"), {"id": track_id}).mappings().first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Tracker record not found")
+    # Only allow return when accepted
+    if (req.get("status") or "").lower() != "accepted":
+        raise HTTPException(status_code=400, detail="Only accepted requests can be returned")
+    # Ensure columns exist
+    try:
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_by VARCHAR(100)"))
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
+    except Exception:
+        pass
+    returned_by = (payload.accepted_by or "").strip() or "operator"
+    db.execute(text(
+        """
+        UPDATE public.gauge_requests
+        SET status = 'returned', returned_by = :returned_by, returned_at = NOW()
+        WHERE id = :id
+        """
+    ), {"id": track_id, "returned_by": returned_by})
     db.commit()
     return list_gauge_tracks(limit=1, offset=0, db=db)[0]

@@ -35,7 +35,12 @@ export default function GaugeTracker() {
 
   const onReject = async (row) => {
     try {
-      const res = await fetch(`/gauge-tracker/${row.id}/reject`, { method: 'POST' })
+      const accepted_by = (()=>{ try { return localStorage.getItem('username') || 'admin' } catch { return 'admin' } })()
+      const res = await fetch(`/gauge-tracker/${row.id}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accepted_by })
+      })
       if (!res.ok) throw new Error(await res.text() || 'Failed to reject')
       message.success('Rejected')
       fetchRows()
@@ -54,18 +59,30 @@ export default function GaugeTracker() {
     { title: 'Qty', dataIndex: 'quantity', key: 'quantity', width: 70 },
     { title: 'Requested By', dataIndex: 'requested_by', key: 'requested_by', width: 140, ellipsis: true },
     { title: 'Requested At', dataIndex: 'requested_at', key: 'requested_at', width: 180, render:(v)=> v ? new Date(v).toLocaleString() : '' },
-    { title: 'Holder', key: 'holder', width: 200, render:(_,row)=> (
-      row.accepted_by
-        ? <span>With <Tag color="blue">{row.accepted_by}</Tag> since {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
-        : <span>Not taken</span>
-    )},
-    { title: 'Status', dataIndex: 'status', key: 'status', width: 110, render:(v)=> (v||'').toUpperCase() },
-    { title: 'Actions', key: 'actions', width: 200, fixed: 'right', align: 'right', render: (_, row) => (
-      <Space>
-        <Button type="primary" onClick={()=>onAccept(row)} disabled={!!row.accepted_by}>Accept</Button>
-        <Button danger onClick={()=>onReject(row)} disabled={!!row.accepted_by}>Reject</Button>
-      </Space>
-    )},
+    { title: 'Holder', key: 'holder', width: 260, render:(_,row)=> {
+      const s = (row.status||'').toLowerCase()
+      if (s === 'accepted') {
+        return <span>With <Tag color="blue">{row.accepted_by || '-'}</Tag> since {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
+      }
+      if (s === 'rejected') {
+        return <span>Rejected by <Tag color="red">{row.accepted_by || '-'}</Tag> at {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
+      }
+      if (s === 'returned') {
+        return <span>Returned by <Tag color="green">{row.returned_by || '-'}</Tag> at {row.returned_at ? new Date(row.returned_at).toLocaleString() : '-'}</span>
+      }
+      return <span>Not taken</span>
+    }},
+    { title: 'Status', dataIndex: 'status', key: 'status', width: 120, render:(v)=> (v||'').toUpperCase() },
+    { title: 'Actions', key: 'actions', width: 200, fixed: 'right', align: 'right', render: (_, row) => {
+      const s = (row.status||'').toLowerCase()
+      const disabled = s === 'accepted' || s === 'rejected' || s === 'returned'
+      return (
+        <Space>
+          <Button type="primary" onClick={()=>onAccept(row)} disabled={disabled}>Accept</Button>
+          <Button danger onClick={()=>onReject(row)} disabled={disabled}>Reject</Button>
+        </Space>
+      )
+    }},
   ], [])
 
   return (

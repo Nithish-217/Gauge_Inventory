@@ -92,6 +92,8 @@ class GaugeTrackPublic(BaseModel):
     status: str
     accepted_by: str | None = None
     accepted_at: datetime | None = None
+    returned_by: str | None = None
+    returned_at: datetime | None = None
 
 
 class GaugeTrackAction(BaseModel):
