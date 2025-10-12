@@ -59,16 +59,16 @@ export default function GaugeTracker() {
     { title: 'Qty', dataIndex: 'quantity', key: 'quantity', width: 70 },
     { title: 'Requested By', dataIndex: 'requested_by', key: 'requested_by', width: 140, ellipsis: true },
     { title: 'Requested At', dataIndex: 'requested_at', key: 'requested_at', width: 180, render:(v)=> v ? new Date(v).toLocaleString() : '' },
-    { title: 'Holder', key: 'holder', width: 260, render:(_,row)=> {
+    { title: 'Actions', key: 'holder', width: 260, render:(_,row)=> {
       const s = (row.status||'').toLowerCase()
       if (s === 'accepted') {
-        return <span>With <Tag color="blue">{row.accepted_by || '-'}</Tag> since {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
+        return <span>Accepted by <Tag color="blue">{row.accepted_by || '-'}</Tag> on {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
       }
       if (s === 'rejected') {
-        return <span>Rejected by <Tag color="red">{row.accepted_by || '-'}</Tag> at {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
+        return <span>Rejected by <Tag color="red">{row.accepted_by || '-'}</Tag> on {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
       }
       if (s === 'returned') {
-        return <span>Returned by <Tag color="green">{row.returned_by || '-'}</Tag> at {row.returned_at ? new Date(row.returned_at).toLocaleString() : '-'}</span>
+        return <span>Returned by <Tag color="green">{row.returned_by || '-'}</Tag> on {row.returned_at ? new Date(row.returned_at).toLocaleString() : '-'}</span>
       }
       return <span>Not taken</span>
     }},

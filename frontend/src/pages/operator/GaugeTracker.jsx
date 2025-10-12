@@ -47,13 +47,13 @@ export default function OperatorGaugeTracker() {
     { title: 'Holder', key: 'holder', width: 260, render:(_,row)=> {
       const s = (row.status||'').toLowerCase()
       if (s === 'accepted') {
-        return <span>With <Tag color="blue">{row.accepted_by || '-'}</Tag> since {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
+        return <span>Accepted by <Tag color="blue">{row.accepted_by || '-'}</Tag> on {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
       }
       if (s === 'rejected') {
-        return <span>Rejected by <Tag color="red">{row.accepted_by || '-'}</Tag> at {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
+        return <span>Rejected by <Tag color="red">{row.accepted_by || '-'}</Tag> on {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
       }
       if (s === 'returned') {
-        return <span>Returned at {row.returned_at ? new Date(row.returned_at).toLocaleString() : '-'}</span>
+        return <span>Returned on {row.returned_at ? new Date(row.returned_at).toLocaleString() : '-'}</span>
       }
       return <span>Pending</span>
     }},

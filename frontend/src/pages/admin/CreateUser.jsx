@@ -11,6 +11,7 @@ export default function CreateUser() {
   const [usersLoading, setUsersLoading] = useState(false)
   const [pwdModal, setPwdModal] = useState({ open: false, user: null })
   const [pwdForm] = Form.useForm()
+  const [showCreate, setShowCreate] = useState(false)
 
   const onChange = (e) => {
     const { name, value } = e.target
@@ -56,6 +57,7 @@ export default function CreateUser() {
       setForm({ username: '', email: '', password: '', role: 'operator' })
       message.success('User created')
       fetchUsers()
+      setShowCreate(false)
     } catch (err) {
       setError(typeof err?.message === 'string' ? err.message : 'Failed to create user')
       message.error(typeof err?.message === 'string' ? err.message : 'Failed to create user')
@@ -122,24 +124,32 @@ export default function CreateUser() {
     <div>
       <h2>Users</h2>
 
-      <form onSubmit={onSubmit} style={{maxWidth: 680, border:'1px solid rgba(0,0,0,0.08)', padding:16, borderRadius:12, marginBottom:16, background:'var(--card)'}}>
-        <div style={{display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:12}}>
-          <div className="field"><label className="label" htmlFor="username">Username</label><Input id="username" name="username" value={form.username} onChange={onChange} placeholder="Username" /></div>
-          <div className="field"><label className="label" htmlFor="email">Email</label><Input id="email" name="email" type="email" value={form.email} onChange={onChange} placeholder="Email" /></div>
-          <div className="field"><label className="label" htmlFor="password">Password</label><Input.Password id="password" name="password" value={form.password} onChange={onChange} placeholder="Password" /></div>
-          <div className="field"><label className="label" htmlFor="role">Role</label>
-            <Select id="role" value={form.role} onChange={(v)=>setForm(f=>({...f, role:v}))} options={[{value:'admin', label:'Admin'},{value:'operator', label:'Operator'}]} />
+      {!showCreate && (
+        <div style={{marginBottom:16}}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={()=>setShowCreate(true)}>Create a new user</Button>
+        </div>
+      )}
+
+      {showCreate && (
+        <form onSubmit={onSubmit} style={{maxWidth: 680, border:'1px solid rgba(0,0,0,0.08)', padding:16, borderRadius:12, marginBottom:16, background:'var(--card)'}}>
+          <div style={{display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:12}}>
+            <div className="field"><label className="label" htmlFor="username">Username</label><Input id="username" name="username" value={form.username} onChange={onChange} placeholder="Username" /></div>
+            <div className="field"><label className="label" htmlFor="email">Email</label><Input id="email" name="email" type="email" value={form.email} onChange={onChange} placeholder="Email" /></div>
+            <div className="field"><label className="label" htmlFor="password">Password</label><Input.Password id="password" name="password" value={form.password} onChange={onChange} placeholder="Password" /></div>
+            <div className="field"><label className="label" htmlFor="role">Role</label>
+              <Select id="role" value={form.role} onChange={(v)=>setForm(f=>({...f, role:v}))} options={[{value:'admin', label:'Admin'},{value:'operator', label:'Operator'}]} />
+            </div>
           </div>
-        </div>
-        <div className="error" role="alert" aria-live="polite">{error}</div>
-        {success && <div style={{color:'#86efac',fontSize:'13px',minHeight:'18px'}}>{success}</div>}
-        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:12}}>
-          <Space>
-            <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={loading}>{loading ? 'Creating...' : 'Create User'}</Button>
-            <Button icon={<ReloadOutlined />} onClick={fetchUsers}>Refresh</Button>
-          </Space>
-        </div>
-      </form>
+          <div className="error" role="alert" aria-live="polite">{error}</div>
+          {success && <div style={{color:'#86efac',fontSize:'13px',minHeight:'18px'}}>{success}</div>}
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:12}}>
+            <Space>
+              <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={loading}>{loading ? 'Creating...' : 'Submit'}</Button>
+              <Button icon={<ReloadOutlined />} onClick={fetchUsers}>Refresh</Button>
+            </Space>
+          </div>
+        </form>
+      )}
 
       <div style={{border:'1px solid rgba(0,0,0,0.06)', borderRadius:12}}>
         <Table columns={columns} dataSource={users} loading={usersLoading} pagination={false} />
