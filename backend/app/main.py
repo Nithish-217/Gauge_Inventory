@@ -552,7 +552,8 @@ def return_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Ses
         db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
     except Exception:
         pass
-    returned_by = (payload.accepted_by or "").strip() or "operator"
+    # Prefer the actor provided; if missing, fall back to original requester, then a generic label
+    returned_by = (payload.accepted_by or "").strip() or (req.get("requested_by") or "operator")
     db.execute(text(
         """
         UPDATE public.gauge_requests
