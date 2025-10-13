@@ -13,8 +13,10 @@ from app.database import SessionLocal, engine  # noqa: E402
 from app.models import Base  # noqa: E402
 from sqlalchemy import text
 
-EXCEL_PATH = Path(r"d:\gaugeinventory\DOC-ML-014E-R40.xlsx")
+# Path to the Excel file to ingest
+EXCEL_PATH = Path(r"d:\gaueinventory\Gauge_Inventory\40GAUGES.xlsx")
 TARGET_TABLE = "equipment_used_for_calibration"
+REPLACE_ALL = True  # when True, delete existing rows and insert everything from Excel
 
 HEADER_KEYS = {
     "name_of_the_equipment": ["Name Of The Equipment", "Equipment", "Name of the equipment"],
@@ -117,6 +119,26 @@ def parse_last_and_due(val: Any) -> (Optional[str], Optional[str]):
     return dates[0], dates[1]
 
 
+def add_months_iso(iso_date: Optional[str], months: Optional[int]) -> Optional[str]:
+    """Add months to an ISO date (YYYY-MM-DD) and return ISO. If inputs invalid, return None."""
+    if not iso_date or not months or months <= 0:
+        return None
+    try:
+        from datetime import date
+        y, m, d = [int(x) for x in iso_date.split("-")]
+        # compute new month/year
+        total = m - 1 + int(months)
+        ny = y + total // 12
+        nm = (total % 12) + 1
+        # clamp day to end of month
+        import calendar
+        last_day = calendar.monthrange(ny, nm)[1]
+        nd = min(d, last_day)
+        return date(ny, nm, nd).isoformat()
+    except Exception:
+        return None
+
+
 def map_headers(header_row_values: List[str]) -> Dict[str, int]:
     mapping: Dict[str, int] = {}
     for idx, raw in enumerate(header_row_values):
@@ -174,7 +196,9 @@ def main():
         }
         last, due = parse_last_and_due(values[mapping["last_due_combo"]])
         record["date_of_last_calibration"] = last
-        record["calibration_due"] = due
+        # Compute due if missing using last + frequency
+        computed_due = due or add_months_iso(last, record["calibration_freq_months"]) or None
+        record["calibration_due"] = computed_due
         # PCR No: extract digits to fit INT column; else None
         record["pcr_number"] = normalize_int(values[mapping["pcr_no"]])
 
@@ -187,59 +211,63 @@ def main():
         print("No data rows prepared. Nothing to insert.")
         return 0
 
-    # Insert into DB, skipping duplicates by idfn_no; if duplicate and DB.receipt_date is NULL
-    # but we have a value, update receipt_date (and other nullable date fields if desired)
+    # Insert strategy
+    cols = [
+        "name_of_the_equipment",
+        "location",
+        "receipt_date",
+        "make_model",
+        "idfn_no",
+        "overall_measurement_uncertainty",
+        "calibration_freq_months",
+        "date_of_last_calibration",
+        "calibration_due",
+        "pcr_number",
+    ]
+    placeholders = ", ".join([":" + c for c in cols])
+    colnames = ", ".join(cols)
     inserted = 0
     updated = 0
     with SessionLocal() as db:
-        for rec in rows_prepared:
-            if not rec.get("idfn_no"):
-                continue
-            row = db.execute(
-                text(f"SELECT gauge_id, receipt_date, date_of_last_calibration, calibration_due FROM public.{TARGET_TABLE} WHERE idfn_no = :idfn_no LIMIT 1"),
-                {"idfn_no": rec["idfn_no"]},
-            ).first()
-            if row:
-                # Perform targeted updates if missing in DB but present in incoming record
-                fields_to_update = {}
-                if row.receipt_date is None and rec.get("receipt_date"):
-                    fields_to_update["receipt_date"] = rec["receipt_date"]
-                if row.date_of_last_calibration is None and rec.get("date_of_last_calibration"):
-                    fields_to_update["date_of_last_calibration"] = rec["date_of_last_calibration"]
-                if row.calibration_due is None and rec.get("calibration_due"):
-                    fields_to_update["calibration_due"] = rec["calibration_due"]
-                if fields_to_update:
-                    set_clause = ", ".join([f"{k} = :{k}" for k in fields_to_update.keys()])
-                    params = {**fields_to_update, "idfn_no": rec["idfn_no"]}
-                    db.execute(
-                        text(f"UPDATE public.{TARGET_TABLE} SET {set_clause} WHERE idfn_no = :idfn_no"),
-                        params,
-                    )
-                    updated += 1
-                continue
+        if REPLACE_ALL:
+            # Delete existing and insert all
+            db.execute(text(f"TRUNCATE TABLE public.{TARGET_TABLE} RESTART IDENTITY"))
+            for rec in rows_prepared:
+                db.execute(text(f"INSERT INTO public.{TARGET_TABLE} ({colnames}) VALUES ({placeholders})"), rec)
+                inserted += 1
+            db.commit()
+        else:
+            # Original upsert-lite behavior
+            for rec in rows_prepared:
+                if not rec.get("idfn_no"):
+                    continue
+                row = db.execute(
+                    text(f"SELECT gauge_id, receipt_date, date_of_last_calibration, calibration_due FROM public.{TARGET_TABLE} WHERE idfn_no = :idfn_no LIMIT 1"),
+                    {"idfn_no": rec["idfn_no"]},
+                ).first()
+                if row:
+                    fields_to_update = {}
+                    if row.receipt_date is None and rec.get("receipt_date"):
+                        fields_to_update["receipt_date"] = rec["receipt_date"]
+                    if row.date_of_last_calibration is None and rec.get("date_of_last_calibration"):
+                        fields_to_update["date_of_last_calibration"] = rec["date_of_last_calibration"]
+                    if row.calibration_due is None and rec.get("calibration_due"):
+                        fields_to_update["calibration_due"] = rec["calibration_due"]
+                    if fields_to_update:
+                        set_clause = ", ".join([f"{k} = :{k}" for k in fields_to_update.keys()])
+                        params = {**fields_to_update, "idfn_no": rec["idfn_no"]}
+                        db.execute(
+                            text(f"UPDATE public.{TARGET_TABLE} SET {set_clause} WHERE idfn_no = :idfn_no"),
+                            params,
+                        )
+                        updated += 1
+                    continue
+                db.execute(text(f"INSERT INTO public.{TARGET_TABLE} ({colnames}) VALUES ({placeholders})"), rec)
+                inserted += 1
+            db.commit()
 
-            cols = [
-                "name_of_the_equipment",
-                "location",
-                "receipt_date",
-                "make_model",
-                "idfn_no",
-                "overall_measurement_uncertainty",
-                "calibration_freq_months",
-                "date_of_last_calibration",
-                "calibration_due",
-                "pcr_number",
-            ]
-            placeholders = ", ".join([":" + c for c in cols])
-            colnames = ", ".join(cols)
-            sql = text(
-                f"INSERT INTO public.{TARGET_TABLE} ({colnames}) VALUES ({placeholders})"
-            )
-            db.execute(sql, rec)
-            inserted += 1
-        db.commit()
-
-    print(f"Prepared rows: {len(rows_prepared)}; Inserted (skipping duplicates): {inserted}; Updated missing dates: {updated}")
+    mode = "replace" if REPLACE_ALL else "merge"
+    print(f"Mode: {mode}. Prepared rows: {len(rows_prepared)}; Inserted: {inserted}; Updated: {updated}")
     return 0
 
 
