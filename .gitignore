@@ -52,3 +52,15 @@ Thumbs.db
 # -------------------
 *.xlsx
 *.xls
+
+
+# Node modules
+frontend/node_modules/
+
+# Vite build/dependencies
+frontend/node_modules/.vite/
+
+node_modules/
+dist/
+.vite/
+.env
