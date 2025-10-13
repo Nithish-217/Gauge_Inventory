@@ -4,6 +4,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 from sqlalchemy import text
+from fastapi.responses import StreamingResponse
+import io
+from barcode import Code128
+from barcode.writer import ImageWriter
 
 from .database import get_db
 from . import models, schemas
@@ -516,6 +520,42 @@ def accept_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Ses
     ), {"id": track_id, "accepted_by": accepted_by})
     db.commit()
     return list_gauge_tracks(limit=1, offset=0, db=db)[0]
+
+
+# Barcode: Code128 by IDFN -> payload "IDFN_LASTCAL_DUE"
+@app.get("/barcode/code128/by-idfn/{idfn}.png")
+def barcode_by_idfn_png(idfn: str, db: Session = Depends(get_db)):
+    # Case-insensitive, trimmed match for IDFN
+    row = db.execute(text(
+        """
+        SELECT idfn_no, date_of_last_calibration, calibration_due
+        FROM public.equipment_used_for_calibration
+        WHERE TRIM(LOWER(idfn_no)) = TRIM(LOWER(:idfn))
+        LIMIT 1
+        """
+    ), {"idfn": idfn}).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="IDFN not found")
+
+    # Format dates as YYYY-MM-DD if present
+    def fmt(d):
+        if not d:
+            return ""
+        try:
+            from datetime import date, datetime as _dt
+            if isinstance(d, (date, _dt)):
+                return d.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        return str(d)
+
+    payload = f"{row['idfn_no']}_{fmt(row.get('date_of_last_calibration'))}_{fmt(row.get('calibration_due'))}"
+    buf = io.BytesIO()
+    Code128(payload, writer=ImageWriter()).write(buf, options={"write_text": False})
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="image/png")
+
+
 
 
 @app.post("/gauge-tracker/{track_id}/reject", response_model=schemas.GaugeTrackPublic)

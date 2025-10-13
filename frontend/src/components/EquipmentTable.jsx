@@ -31,6 +31,26 @@ export default function EquipmentTable({ mode = 'admin' }) {
   })
   const limit = 25
 
+  // Helper: add months to a YYYY-MM-DD string and return YYYY-MM-DD
+  function addMonthsISO(dateStr, months) {
+    try {
+      if (!dateStr || !months) return ''
+      const [y, m, d] = String(dateStr).split('-').map(Number)
+      if (!y || !m || !d) return ''
+      const dt = new Date(Date.UTC(y, m - 1, d))
+      const targetMonth = dt.getUTCMonth() + Number(months)
+      // Set to 1st, adjust month, then clamp day for month length
+      const temp = new Date(Date.UTC(dt.getUTCFullYear(), targetMonth, 1))
+      const lastDay = new Date(Date.UTC(temp.getUTCFullYear(), temp.getUTCMonth() + 1, 0)).getUTCDate()
+      const day = Math.min(d, lastDay)
+      const out = new Date(Date.UTC(temp.getUTCFullYear(), temp.getUTCMonth(), day))
+      const yy = out.getUTCFullYear()
+      const mm = String(out.getUTCMonth() + 1).padStart(2, '0')
+      const dd = String(out.getUTCDate()).padStart(2, '0')
+      return `${yy}-${mm}-${dd}`
+    } catch { return '' }
+  }
+
   const fetchData = async () => {
     setError(''); setLoading(true)
     try {
@@ -90,7 +110,19 @@ export default function EquipmentTable({ mode = 'admin' }) {
 
   const onFormChange = (e) => {
     const { name, value } = e.target
-    setForm(f => ({...f, [name]: value}))
+    setForm(prev => {
+      const next = { ...prev, [name]: value }
+      // Auto-calc calibration_due when last calibration date and frequency are present
+      if ((name === 'date_of_last_calibration' || name === 'calibration_freq_months')) {
+        const last = name === 'date_of_last_calibration' ? value : next.date_of_last_calibration
+        const freq = name === 'calibration_freq_months' ? value : next.calibration_freq_months
+        const months = String(freq || '').trim()
+        if (last && /^\d{4}-\d{2}-\d{2}$/.test(String(last)) && /^\d+$/.test(months)) {
+          next.calibration_due = addMonthsISO(last, Number(months)) || next.calibration_due
+        }
+      }
+      return next
+    })
     validateField(name, value)
   }
 
@@ -250,7 +282,14 @@ export default function EquipmentTable({ mode = 'admin' }) {
       {/* Operator view: auto-uses logged-in username; no manual input */}
 
       {mode === 'admin' && adding && (
-        <form onSubmit={onAdd} style={{border:'1px solid rgba(0,0,0,0.08)', padding:16, borderRadius:12, marginBottom:12, background:'var(--card)'}}>
+        <form onSubmit={onAdd} style={{
+          border:'1px solid rgba(0,0,0,0.08)',
+          padding:16,
+          borderRadius:12,
+          marginBottom:12,
+          background:'#ffffff',
+          boxShadow:'0 2px 8px rgba(0,0,0,0.04)'
+        }}>
           <div style={{display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:12}}>
             <div className="field">
               <label className="label">Equipment Name* (text)</label>

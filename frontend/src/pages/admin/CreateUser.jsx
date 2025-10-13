@@ -147,6 +147,7 @@ export default function CreateUser() {
               <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={loading}>{loading ? 'Creating...' : 'Submit'}</Button>
               <Button icon={<ReloadOutlined />} onClick={fetchUsers}>Refresh</Button>
             </Space>
+            <Button danger onClick={()=>setShowCreate(false)}>Close</Button>
           </div>
         </form>
       )}

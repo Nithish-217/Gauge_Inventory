@@ -68,9 +68,16 @@ export default function CalibrationPlanner() {
       <div style={{ marginTop: 6, display: 'grid', gap: 4 }}>
         {list.slice(0, 3).map((ev, idx) => {
           const isDue = ev.type === 'processing'
-          const bg = isDue ? 'rgba(59,130,246,0.12)' : 'rgba(16,185,129,0.12)'
-          const border = isDue ? '1px solid rgba(59,130,246,0.3)' : '1px solid rgba(16,185,129,0.3)'
-          const color = isDue ? '#2563eb' : '#059669'
+          const isOverdue = isDue && dayjs(key).isBefore(dayjs(), 'day')
+          const bg = isDue
+            ? (isOverdue ? 'rgba(220,38,38,0.12)' : 'rgba(59,130,246,0.12)')
+            : 'rgba(16,185,129,0.12)'
+          const border = isDue
+            ? (isOverdue ? '1px solid rgba(220,38,38,0.35)' : '1px solid rgba(59,130,246,0.3)')
+            : '1px solid rgba(16,185,129,0.3)'
+          const color = isDue
+            ? (isOverdue ? '#dc2626' : '#2563eb')
+            : '#059669'
           return (
             <Tooltip title={ev.label} key={idx}>
               <div
@@ -127,6 +134,7 @@ export default function CalibrationPlanner() {
           <div style={{display:'flex',alignItems:'center',gap:12}}>
             <Badge status="success" text={<span style={{fontSize:12}}>Last calibration</span>} />
             <Badge status="processing" text={<span style={{fontSize:12}}>Calibration due</span>} />
+            <Badge status="error" text={<span style={{fontSize:12}}>Missed (overdue)</span>} />
           </div>
           <Button onClick={fetchAll}>Refresh</Button>
         </Space>

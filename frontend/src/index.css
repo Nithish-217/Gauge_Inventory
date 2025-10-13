@@ -93,10 +93,23 @@ h1{font-size:22px;line-height:1.25;margin:0;letter-spacing:.3px}
 .menu-item:hover{background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.12);box-shadow:0 8px 18px rgba(0,0,0,0.18);transform:translateX(2px)}
 .menu-item:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}
 .menu-item.active{background:linear-gradient(180deg, rgba(147,197,253,0.35), rgba(99,102,241,0.35)); border-color: rgba(147,197,253,0.5); box-shadow:0 10px 22px rgba(30,64,175,0.25)}
-.admin-content{flex:1;min-width:0;padding:24px;background:var(--panel)}
+.admin-content{flex:1;min-width:0;padding:24px;background:var(--card)}
+
+/* Admin forms: ensure inputs are clean white (light theme) */
+.admin-content .input{
+  background:#e3ebf4;
+  border:1px solid rgba(0,0,0,0.12);
+  color:var(--text);
+}
+/* Preserve dark theme styling for inputs inside admin as well */
+:root[data-theme="dark"] .admin-content .input{
+  background:#0b1324;
+  border:1px solid rgba(255,255,255,0.12);
+  color:#e5e7eb;
+}
 
 /* Top bar */
-.topbar{height:56px;background:linear-gradient(180deg, rgba(0,0,0,0.08), rgba(0,0,0,0.02));border-bottom:1px solid rgba(0,0,0,0.06);display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-top-left-radius:12px}
+.topbar{height:56px;background:var(--card);border-bottom:1px solid rgba(0,0,0,0.06);display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-top-left-radius:12px}
 .topbar-title{font-weight:700}
 .logout-btn{padding:8px 12px;border-radius:10px;border:1px solid rgba(0,0,0,0.1);background:#ef4444;color:#fff;cursor:pointer;font-weight:600}
 .logout-btn:hover{filter:brightness(1.05)}
