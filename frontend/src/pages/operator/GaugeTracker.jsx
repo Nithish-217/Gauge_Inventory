@@ -71,8 +71,8 @@ export default function OperatorGaugeTracker() {
 
   return (
     <div>
-      <h2>My Gauge Requests</h2>
-      <div style={{marginBottom:12}}>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
+        <h2 style={{margin:0}}>My Gauge Requests</h2>
         <Space>
           <Button onClick={fetchRows}>Refresh</Button>
         </Space>

@@ -87,8 +87,8 @@ export default function GaugeTracker() {
 
   return (
     <div>
-      <h2>Gauge Tracker</h2>
-      <div style={{marginBottom:12}}>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
+        <h2 style={{margin:0}}>Gauge Tracker</h2>
         <Space>
           <Button onClick={fetchRows}>Refresh</Button>
         </Space>

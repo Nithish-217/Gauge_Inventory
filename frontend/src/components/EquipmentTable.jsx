@@ -247,11 +247,12 @@ export default function EquipmentTable({ mode = 'admin' }) {
 
   const columns = useMemo(() => {
     const base = [
-      { title: 'Gauge ID', dataIndex: 'gauge_id', key: 'gauge_id', width: 110, sorter: (a,b)=>a.gauge_id-b.gauge_id },
+      { title: 'Sl. No.', dataIndex: 'gauge_id', key: 'gauge_id', width: 110, sorter: (a,b)=>a.gauge_id-b.gauge_id },
       { title: 'Equipment', dataIndex: 'name_of_the_equipment', key: 'name_of_the_equipment', ellipsis: true, sorter: (a,b)=>String(a.name_of_the_equipment||'').localeCompare(String(b.name_of_the_equipment||'')) },
       { title: 'Location', dataIndex: 'location', key: 'location', ellipsis: true, width: 140, sorter: (a,b)=>String(a.location||'').localeCompare(String(b.location||'')) },
       { title: 'Make/Model', dataIndex: 'make_model', key: 'make_model', ellipsis: true, width: 160, sorter: (a,b)=>String(a.make_model||'').localeCompare(String(b.make_model||'')) },
       { title: 'IDFN', dataIndex: 'idfn_no', key: 'idfn_no', width: 140, ellipsis: true, sorter: (a,b)=>String(a.idfn_no||'').localeCompare(String(b.idfn_no||'')) },
+      { title: 'PCR Number', dataIndex: 'pcr_number', key: 'pcr_number', width: 160, sorter:(a,b)=>Number(a.pcr_number||0)-Number(b.pcr_number||0) },
       { title: 'Last Cal.', dataIndex: 'date_of_last_calibration', key: 'date_of_last_calibration', width: 140, sorter:(a,b)=>new Date(a.date_of_last_calibration||0)-new Date(b.date_of_last_calibration||0), render:(v)=> v ? new Date(v).toLocaleDateString() : '' },
       { title: 'Due', dataIndex: 'calibration_due', key: 'calibration_due', width: 140, sorter:(a,b)=>new Date(a.calibration_due||0)-new Date(b.calibration_due||0), render:(v)=> v ? new Date(v).toLocaleDateString() : '' },
     ]
@@ -268,7 +269,11 @@ export default function EquipmentTable({ mode = 'admin' }) {
           title: 'Request', key: 'request', fixed: 'right', align: 'right',
           render: (_, row) => (
             <Space>
-              <Button type="primary" onClick={() => onRequest(row)}>Request</Button>
+              <Button
+                type="primary"
+                onClick={() => onRequest(row)}
+                disabled={!!row.is_unavailable}
+              >{row.is_unavailable ? 'Unavailable' : 'Request'}</Button>
             </Space>
           )
         }
@@ -377,13 +382,15 @@ export default function EquipmentTable({ mode = 'admin' }) {
                   enterButton
                   style={{minWidth:320}}
                 />
-                <Button icon={<ReloadOutlined />} onClick={fetchData}>Refresh</Button>
               </Space>
-              {mode === 'admin' && (
-                <Button type="primary" icon={<PlusOutlined />} onClick={()=>setAdding(v=>!v)}>
-                  {adding ? 'Close' : 'Add Tool'}
-                </Button>
-              )}
+              <Space>
+                <Button icon={<ReloadOutlined />} onClick={fetchData}>Refresh</Button>
+                {mode === 'admin' && (
+                  <Button type="primary" icon={<PlusOutlined />} onClick={()=>setAdding(v=>!v)}>
+                    {adding ? 'Close' : 'Add Tool'}
+                  </Button>
+                )}
+              </Space>
             </div>
           )}
         />

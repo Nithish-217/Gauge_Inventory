@@ -122,6 +122,11 @@ def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: S
     if q:
         where = "WHERE name_of_the_equipment ILIKE :qs OR idfn_no ILIKE :qs OR location ILIKE :qs"
         params["qs"] = f"%{q}%"
+    # Ensure returned_at column exists for availability checks
+    try:
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
+    except Exception:
+        pass
     sql = text(
         f"""
         SELECT 
@@ -131,7 +136,14 @@ def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: S
           make_model,
           idfn_no,
           date_of_last_calibration,
-          calibration_due
+          calibration_due,
+          pcr_number,
+          EXISTS (
+            SELECT 1 FROM public.gauge_requests gr
+            WHERE gr.gauge_id = equipment_used_for_calibration.gauge_id
+              AND gr.status = 'accepted'
+              AND gr.returned_at IS NULL
+          ) AS is_unavailable
         FROM public.equipment_used_for_calibration
         {where}
         ORDER BY gauge_id
@@ -292,6 +304,22 @@ def create_request(payload: schemas.RequestCreate, db: Session = Depends(get_db)
         )
         """
     ))
+
+    # Ensure returned_at column exists for availability checks
+    try:
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
+    except Exception:
+        pass
+    # Block if an accepted request exists and not returned
+    active = db.execute(text(
+        """
+        SELECT 1 FROM public.gauge_requests
+        WHERE gauge_id = :gid AND status = 'accepted' AND returned_at IS NULL
+        LIMIT 1
+        """
+    ), {"gid": payload.gauge_id}).first()
+    if active:
+        raise HTTPException(status_code=400, detail="Tool currently issued and not yet returned")
 
     result = db.execute(
         text(
@@ -458,11 +486,23 @@ def create_gauge_track(payload: schemas.GaugeTrackCreate, db: Session = Depends(
         """
     ))
     data = payload.model_dump()
-    rec = db.execute(text(
+    # Block if an accepted request exists and not returned
+    active = db.execute(text(
         """
-        INSERT INTO public.gauge_requests (gauge_id, requested_by, requested_at, status)
-        VALUES (:gauge_id, :requested_by, NOW(), 'requested')
-        RETURNING id
+        SELECT 1 FROM public.gauge_requests
+        WHERE gauge_id = :gid AND status = 'accepted' AND returned_at IS NULL
+        LIMIT 1
+        """
+    ), {"gid": payload.gauge_id}).first()
+    if active:
+        raise HTTPException(status_code=400, detail="Tool currently issued and not yet returned")
+
+    result = db.execute(
+        text(
+            """
+            INSERT INTO public.gauge_requests (gauge_id, requested_by, requested_at, status)
+            VALUES (:gauge_id, :requested_by, NOW(), 'requested')
+            RETURNING id
         """
     ), data).mappings().first()
     db.commit()
