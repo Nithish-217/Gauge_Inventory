@@ -1,6 +1,6 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import './index.css'
 import 'antd/dist/reset.css'
 import { ConfigProvider, theme } from 'antd'
@@ -26,7 +26,7 @@ root.render(
   <React.StrictMode>
     <ConfigProvider theme={{ algorithm: theme.defaultAlgorithm }}>
       <BrowserRouter>
-        <Routes>
+        <Routes future={{ v7_relativeSplatPath: true }}>
           <Route path="/" element={<Layout />}> 
             <Route index element={<App />} />
             <Route path="admin" element={<AdminDashboard />} >
@@ -45,6 +45,8 @@ root.render(
               <Route path="tool-request" element={<ToolRequest />} />
               <Route path="calibration-report" element={<CalibrationReport />} />
             </Route>
+            <Route path="dev" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>
       </BrowserRouter>

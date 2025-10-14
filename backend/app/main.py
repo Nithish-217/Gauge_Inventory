@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import Request
 from fastapi import UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -9,6 +10,7 @@ from fastapi.responses import StreamingResponse
 import io
 from barcode import Code128
 from barcode.writer import ImageWriter
+import qrcode
 
 from .database import get_db
 from . import models, schemas
@@ -101,6 +103,38 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Free tools held by this user: mark any accepted and not-yet-returned requests as returned
+    try:
+        # Ensure columns exist for return metadata
+        try:
+            db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_by VARCHAR(100)"))
+            db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
+        except Exception:
+            pass
+        # Use username match (requested_by stores usernames)
+        db.execute(text(
+            """
+            UPDATE public.gauge_requests
+            SET status = 'returned', returned_by = :actor, returned_at = NOW()
+            WHERE requested_by = :uname AND status = 'accepted' AND returned_at IS NULL
+            """
+        ), {"actor": f"system:{user.username}", "uname": user.username})
+        # Also close any legacy gauge_tracker open records issued to this user id
+        try:
+            db.execute(text(
+                """
+                UPDATE public.gauge_tracker
+                SET returned_at = NOW()
+                WHERE issued_to = :uid AND returned_at IS NULL
+                """
+            ), {"uid": user.id})
+        except Exception:
+            pass
+        db.commit()
+    except Exception:
+        db.rollback()
+
     db.delete(user)
     db.commit()
     return None
@@ -115,6 +149,91 @@ def change_password(user_id: int, payload: schemas.ChangePasswordRequest, db: Se
     db.add(user)
     db.commit()
     return {"success": True}
+
+
+@app.post("/admin/free-all-tools")
+def free_all_tools(db: Session = Depends(get_db)):
+    """Marks all currently issued tools as returned across the system.
+    - gauge_requests: status 'accepted' and returned_at IS NULL -> set returned
+    - gauge_tracker: any open rows (returned_at IS NULL) -> close with returned_at
+    Returns the number of rows updated in each table.
+    """
+    # Ensure tables exist (be tolerant if never used yet)
+    try:
+        db.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS public.gauge_requests (
+              id SERIAL PRIMARY KEY,
+              gauge_id INTEGER NOT NULL,
+              requested_by VARCHAR(100),
+              requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              status VARCHAR(20) NOT NULL DEFAULT 'requested',
+              accepted_by VARCHAR(100),
+              accepted_at TIMESTAMPTZ
+            )
+            """
+        ))
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_by VARCHAR(100)"))
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
+    except Exception:
+        pass
+
+    try:
+        db.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS public.gauge_tracker (
+              id SERIAL PRIMARY KEY,
+              gauge_id INTEGER NOT NULL,
+              name_of_the_equipment TEXT NOT NULL,
+              idfn_no TEXT NOT NULL,
+              location TEXT,
+              make_model TEXT,
+              quantity INTEGER NOT NULL DEFAULT 1,
+              requested_by VARCHAR(100),
+              requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              status VARCHAR(20) NOT NULL DEFAULT 'requested',
+              accepted_by VARCHAR(100),
+              accepted_at TIMESTAMPTZ,
+              issued_to INTEGER,
+              issued_at TIMESTAMPTZ,
+              returned_at TIMESTAMPTZ
+            )
+            """
+        ))
+    except Exception:
+        pass
+
+    # Update gauge_requests
+    res1 = None
+    try:
+        res1 = db.execute(text(
+            """
+            UPDATE public.gauge_requests
+            SET status = 'returned', returned_by = 'system:bulk', returned_at = NOW()
+            WHERE status = 'accepted' AND returned_at IS NULL
+            """
+        ))
+    except Exception:
+        res1 = None
+
+    # Update gauge_tracker
+    res2 = None
+    try:
+        res2 = db.execute(text(
+            """
+            UPDATE public.gauge_tracker
+            SET returned_at = NOW()
+            WHERE returned_at IS NULL
+            """
+        ))
+    except Exception:
+        res2 = None
+    db.commit()
+    return {
+        "success": True,
+        "gauge_requests_updated": int(getattr(res1, 'rowcount', 0) or 0),
+        "gauge_tracker_updated": int(getattr(res2, 'rowcount', 0) or 0),
+    }
 
 
 @app.get("/equipment")
@@ -476,7 +595,7 @@ def list_gauge_tracks(limit: int = 100, offset: int = 0, requested_by: str | Non
 
 @app.post("/gauge-tracker", response_model=schemas.GaugeTrackPublic, status_code=status.HTTP_201_CREATED)
 def create_gauge_track(payload: schemas.GaugeTrackCreate, db: Session = Depends(get_db)):
-    # Persist operator request into gauge_requests
+    # Ensure persistence table exists
     db.execute(text(
         """
         CREATE TABLE IF NOT EXISTS public.gauge_requests (
@@ -490,6 +609,11 @@ def create_gauge_track(payload: schemas.GaugeTrackCreate, db: Session = Depends(
         )
         """
     ))
+    # Ensure returned_at column exists before we query on it
+    try:
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
+    except Exception:
+        pass
     data = payload.model_dump()
     # Block if an accepted request exists and not returned
     active = db.execute(text(
@@ -502,7 +626,7 @@ def create_gauge_track(payload: schemas.GaugeTrackCreate, db: Session = Depends(
     if active:
         raise HTTPException(status_code=400, detail="Tool currently issued and not yet returned")
 
-    result = db.execute(
+    rec = db.execute(
         text(
             """
             INSERT INTO public.gauge_requests (gauge_id, requested_by, requested_at, status)
@@ -510,6 +634,9 @@ def create_gauge_track(payload: schemas.GaugeTrackCreate, db: Session = Depends(
             RETURNING id
         """
     ), data).mappings().first()
+    if not rec:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create request")
     db.commit()
     # Return a row-shaped payload by reusing list query for that id
     row = db.execute(text(
@@ -532,6 +659,8 @@ def create_gauge_track(payload: schemas.GaugeTrackCreate, db: Session = Depends(
         WHERE gr.id = :id
         """
     ), {"id": rec["id"]}).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Created request not found")
     return row
 
 
@@ -565,6 +694,136 @@ def accept_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Ses
     ), {"id": track_id, "accepted_by": accepted_by})
     db.commit()
     return list_gauge_tracks(limit=1, offset=0, db=db)[0]
+
+
+# QR Code by IDFN -> payload includes details and a report download URL
+@app.get("/qrcode/by-idfn/{idfn}.png")
+def qrcode_by_idfn_png(idfn: str, request: Request, db: Session = Depends(get_db)):
+    row = db.execute(text(
+        """
+        SELECT e.gauge_id, e.idfn_no, e.date_of_last_calibration, e.calibration_due, cr.object_key
+        FROM public.equipment_used_for_calibration e
+        LEFT JOIN public.calibration_reports cr ON cr.gauge_id = e.gauge_id
+        WHERE TRIM(LOWER(e.idfn_no)) = TRIM(LOWER(:idfn))
+        LIMIT 1
+        """
+    ), {"idfn": idfn}).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="IDFN not found")
+
+    def fmt(d):
+        if not d:
+            return ""
+        try:
+            from datetime import date, datetime as _dt
+            if isinstance(d, (date, _dt)):
+                return d.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        return str(d)
+
+    base = os.getenv("APP_BASE_URL") or str(request.base_url).rstrip("/")
+    report_url = f"{base}/reports/{row['gauge_id']}/download"
+    # Encode only the direct report URL so scanners open the link immediately
+    payload = report_url
+
+    # Build QR
+    qr = qrcode.QRCode(version=1, box_size=10, border=2)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+    # Compose final label with side texts and bottom IDFN
+    from PIL import Image, ImageDraw, ImageFont
+    qr_w, qr_h = qr_img.size  # typically box_size * modules
+    # Margins for side texts and bottom caption
+    side_w = int(qr_w * 0.23)  # ~23% of QR width for vertical labels
+    bottom_h = int(qr_h * 0.18)  # ~18% of QR height for IDFN
+    canvas_w = qr_w + side_w * 2
+    canvas_h = qr_h + bottom_h
+    canvas = Image.new("RGB", (canvas_w, canvas_h), color="white")
+
+    # Paste QR centered horizontally within side margins
+    canvas.paste(qr_img, (side_w, 0))
+
+    # Prepare text strings in dd/mm/YYYY
+    def fmt_dmy(d):
+        try:
+            from datetime import datetime as _dt, date as _date
+            if isinstance(d, str):
+                # Try common formats
+                for f in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%m/%d/%Y"):
+                    try:
+                        return _dt.strptime(d[:10], f).strftime("%d/%m/%Y")
+                    except Exception:
+                        pass
+                return d
+            if hasattr(d, 'strftime'):
+                return d.strftime("%d/%m/%Y")
+        except Exception:
+            pass
+        return str(d) if d else "—"
+
+    last_txt = f"Last: {fmt_dmy(row.get('date_of_last_calibration'))}" if row.get('date_of_last_calibration') else "Last: —"
+    due_txt = f"Due: {fmt_dmy(row.get('calibration_due'))}" if row.get('calibration_due') else "Due: —"
+    idfn_txt = str(row.get('idfn_no') or '')
+
+    try:
+        draw = ImageDraw.Draw(canvas)
+        try:
+            font_small = ImageFont.truetype("arial.ttf", size=max(12, qr_w // 22))
+            font_idfn = ImageFont.truetype("arial.ttf", size=max(14, qr_w // 14))
+        except Exception:
+            font_small = ImageFont.load_default()
+            font_idfn = ImageFont.load_default()
+
+        # Helper for text size
+        def text_size(drw, text, font):
+            try:
+                l, t, r, b = drw.textbbox((0, 0), text, font=font)
+                return (r - l), (b - t)
+            except Exception:
+                return drw.textsize(text, font=font)
+
+        # Left/right vertical text
+        def draw_vertical_text(text, align_left=True):
+            temp = Image.new("RGB", (qr_h, side_w), (255, 255, 255))
+            td = ImageDraw.Draw(temp)
+            tw, th = text_size(td, text, font_small)
+            td.text(((qr_h - tw) // 2, (side_w - th) // 2), text, fill=(0, 0, 0), font=font_small)
+            rotated = temp.rotate(90, expand=True) if align_left else temp.rotate(-90, expand=True)
+            px = 0 if align_left else (side_w + qr_w)
+            canvas.paste(rotated, (px, 0))
+
+        draw_vertical_text(last_txt, align_left=True)
+        draw_vertical_text(due_txt, align_left=False)
+
+        # Bottom IDFN centered under QR
+        idfn_tw, idfn_th = text_size(draw, idfn_txt, font_idfn)
+        idfn_x = (canvas_w - idfn_tw) // 2
+        idfn_y = qr_h + (bottom_h - idfn_th) // 2
+        draw.text((idfn_x, idfn_y), idfn_txt, fill=(0, 0, 0), font=font_idfn)
+
+        # Ensure final image is square by padding with white background as needed
+        if canvas_w != canvas_h:
+            side = max(canvas_w, canvas_h)
+            square = Image.new("RGB", (side, side), color="white")
+            offset = ((side - canvas_w) // 2, (side - canvas_h) // 2)
+            square.paste(canvas, offset)
+            out_img = square
+        else:
+            out_img = canvas
+
+        buf = io.BytesIO()
+        out_img.save(buf, format="PNG")
+        buf.seek(0)
+        return StreamingResponse(buf, media_type="image/png")
+    except Exception:
+        # Fallback to plain QR if composition fails
+        fb = io.BytesIO()
+        qr_img.save(fb, format="PNG")
+        fb.seek(0)
+        return StreamingResponse(fb, media_type="image/png")
 
 
 # =========================

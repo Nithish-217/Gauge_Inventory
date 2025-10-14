@@ -124,14 +124,18 @@ export default function CreateUser() {
     <div>
       <h2>Users</h2>
 
-      {!showCreate && (
-        <div style={{marginBottom:16}}>
-          <Button type="primary" icon={<PlusOutlined />} onClick={()=>setShowCreate(true)}>Create a new user</Button>
-        </div>
-      )}
+      <div style={{marginBottom:16}}>
+        <Button type="primary" icon={<PlusOutlined />} onClick={()=>setShowCreate(true)}>Create a new user</Button>
+      </div>
 
-      {showCreate && (
-        <form onSubmit={onSubmit} style={{maxWidth: 680, border:'1px solid rgba(0,0,0,0.08)', padding:16, borderRadius:12, marginBottom:16, background:'var(--card)'}}>
+      <Modal
+        title="Create a new user"
+        open={showCreate}
+        onCancel={()=>setShowCreate(false)}
+        footer={null}
+        destroyOnClose
+      >
+        <form onSubmit={onSubmit}>
           <div style={{display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:12}}>
             <div className="field"><label className="label" htmlFor="username">Username</label><Input id="username" name="username" value={form.username} onChange={onChange} placeholder="Username" /></div>
             <div className="field"><label className="label" htmlFor="email">Email</label><Input id="email" name="email" type="email" value={form.email} onChange={onChange} placeholder="Email" /></div>
@@ -142,17 +146,16 @@ export default function CreateUser() {
           </div>
           <div className="error" role="alert" aria-live="polite">{error}</div>
           {success && <div style={{color:'#86efac',fontSize:'13px',minHeight:'18px'}}>{success}</div>}
-          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:12}}>
+          <div style={{display:'flex', justifyContent:'flex-end', alignItems:'center', marginTop:12}}>
             <Space>
+              <Button onClick={()=>setShowCreate(false)}>Cancel</Button>
               <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={loading}>{loading ? 'Creating...' : 'Submit'}</Button>
-              <Button icon={<ReloadOutlined />} onClick={fetchUsers}>Refresh</Button>
             </Space>
-            <Button danger onClick={()=>setShowCreate(false)}>Close</Button>
           </div>
         </form>
-      )}
+      </Modal>
 
-      <div style={{border:'1px solid rgba(0,0,0,0.06)', borderRadius:12}}>
+      <div style={{border:'1px solid rgba(0,0,0,0.06)', borderRadius:12, height:'calc(100vh - 260px)', overflow:'auto'}}>
         <Table columns={columns} dataSource={users} loading={usersLoading} pagination={false} />
       </div>
 

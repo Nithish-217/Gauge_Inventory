@@ -1,17 +1,20 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Card, Button, Space, Typography, Table, Input, message, Modal, Image, Tag } from 'antd'
 
 export default function LabelManager() {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
   const [q, setQ] = useState('')
-  const [page, setPage] = useState({ current: 1, pageSize: 10 })
+  const [page, setPage] = useState({ current: 1, pageSize: 50 })
+  const [hasMore, setHasMore] = useState(true)
+  const scrollRef = useRef(null)
   const [preview, setPreview] = useState({ open: false, idfn: '', imgUrl: '' })
 
   async function fetchEquipment(params = {}) {
     setLoading(true)
+    const current = params.current ?? page.current
     const limit = params.pageSize ?? page.pageSize
-    const offset = ((params.current ?? page.current) - 1) * limit
+    const offset = (current - 1) * limit
     const qs = new URLSearchParams()
     qs.set('limit', String(limit))
     qs.set('offset', String(offset))
@@ -19,7 +22,13 @@ export default function LabelManager() {
     try {
       const res = await fetch(`/equipment?${qs.toString()}`)
       const json = await res.json()
-      setItems(json.items ?? [])
+      const batch = json.items ?? []
+      if (current === 1 || params.reset) {
+        setItems(batch)
+      } else {
+        setItems(prev => [...prev, ...batch])
+      }
+      setHasMore(batch.length >= limit)
     } catch (e) {
       message.error('Failed to load equipment')
     } finally {
@@ -32,26 +41,33 @@ export default function LabelManager() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const handleTableChange = (pagination) => {
-    setPage(pagination)
-    fetchEquipment({ current: pagination.current, pageSize: pagination.pageSize })
+  const handleScroll = (e) => {
+    const el = e.currentTarget
+    if (!hasMore || loading) return
+    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24
+    if (nearBottom) {
+      const next = { current: page.current + 1, pageSize: page.pageSize }
+      setPage(next)
+      fetchEquipment(next)
+    }
   }
 
-  const openPreview = (idfn) => {
+  const openPreview = (record) => {
+    const idfn = record?.idfn_no
     if (!idfn) { message.warning('No IDFN for this item'); return }
-    const url = `/barcode/code128/by-idfn/${encodeURIComponent(idfn)}.png?t=${Date.now()}`
+    const url = `/qrcode/by-idfn/${encodeURIComponent(idfn)}.png?t=${Date.now()}`
     setPreview({ open: true, idfn, imgUrl: url })
   }
 
   const downloadBarcode = async (idfn) => {
     if (!idfn) return
-    const res = await fetch(`/barcode/code128/by-idfn/${encodeURIComponent(idfn)}.png`)
+    const res = await fetch(`/qrcode/by-idfn/${encodeURIComponent(idfn)}.png`)
     if (!res.ok) { message.error('Failed to generate barcode'); return }
     const blob = await res.blob()
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `idfn-${idfn}.png`
+    a.download = `idfn-${idfn}-qr.png`
     document.body.appendChild(a)
     a.click()
     a.remove()
@@ -68,7 +84,7 @@ export default function LabelManager() {
       title: 'Action', key: 'action', width: 160,
       render: (_, record) => (
         <Space>
-          <Button type="primary" onClick={() => openPreview(record.idfn_no)} disabled={!record.idfn_no}>Generate</Button>
+          <Button type="primary" onClick={() => openPreview(record)} disabled={!record.idfn_no}>Generate QR</Button>
         </Space>
       )
     }
@@ -78,7 +94,7 @@ export default function LabelManager() {
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Typography.Title level={3} style={{ margin: 0 }}>Label Manager</Typography.Title>
       <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-        Generate a Code128 barcode for each gauge based on IDFN. Barcode payload: IDFN_LASTCAL_DUE
+        Generate a QR code for each gauge based on IDFN. The QR encodes IDFN, last/due dates, and a direct report download URL.
       </Typography.Paragraph>
 
       <Card>
@@ -87,39 +103,48 @@ export default function LabelManager() {
             placeholder="Search by name, IDFN, or location"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            onSearch={() => fetchEquipment({ current: 1, pageSize: page.pageSize })}
+            onSearch={() => { setPage({ current:1, pageSize: page.pageSize }); setHasMore(true); fetchEquipment({ current: 1, pageSize: page.pageSize, reset: true }) }}
             allowClear
             style={{ maxWidth: 420 }}
           />
-          <Button onClick={() => fetchEquipment({ current: 1, pageSize: page.pageSize })}>Refresh</Button>
+          <Button onClick={() => { setPage({ current:1, pageSize: page.pageSize }); setHasMore(true); fetchEquipment({ current: 1, pageSize: page.pageSize, reset: true }) }}>Refresh</Button>
         </Space>
       </Card>
 
       <Card>
-        <Table
-          rowKey={(r) => `${r.gauge_id}`}
-          loading={loading}
-          columns={columns}
-          dataSource={items}
-          pagination={{ current: page.current, pageSize: page.pageSize, showSizeChanger: true }}
-          onChange={handleTableChange}
-        />
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          style={{ maxHeight: 520, overflowY: 'auto', borderRadius: 8 }}
+        >
+          <Table
+            rowKey={(r) => `${r.gauge_id}`}
+            loading={loading}
+            columns={columns}
+            dataSource={items}
+            pagination={false}
+            sticky
+          />
+          <div style={{ textAlign: 'center', padding: 8, color: '#888' }}>
+            {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
+          </div>
+        </div>
       </Card>
 
       <Modal
-        title={`Barcode Preview (IDFN ${preview.idfn || ''})`}
+        title={`QR Preview (IDFN ${preview.idfn || ''})`}
         open={preview.open}
         onCancel={() => setPreview({ open: false, idfn: '', imgUrl: '' })}
         footer={
           <Space>
             <Button onClick={() => setPreview({ open: false, idfn: '', imgUrl: '' })}>Close</Button>
-            <Button type="primary" onClick={() => downloadBarcode(preview.idfn)} disabled={!preview.idfn}>Download PNG</Button>
+            <Button type="primary" onClick={() => downloadBarcode(preview.idfn)} disabled={!preview.idfn}>Print QR</Button>
           </Space>
         }
       >
         {preview.imgUrl ? (
           <div style={{ display: 'flex', justifyContent: 'center' }}>
-            <Image src={preview.imgUrl} width={420} height={120} style={{ objectFit: 'contain' }} />
+            <Image src={preview.imgUrl} width={240} height={240} style={{ objectFit: 'contain' }} />
           </div>
         ) : (
           <Typography.Text type="secondary">No preview available.</Typography.Text>

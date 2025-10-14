@@ -109,18 +109,25 @@ export default function CalibrationPlanner() {
   const monthCellRender = (value) => {
     // year view: show counts for month
     const ym = value.format('YYYY-MM')
-    let last = 0, due = 0
+    let last = 0, due = 0, missed = 0
+    const today = dayjs()
     // Count using items to avoid building additional map
     for (const r of items) {
-      if (r.date_of_last_calibration && r.date_of_last_calibration.startsWith(ym)) last++
-      if (r.calibration_due && r.calibration_due.startsWith(ym)) due++
+      if (r.date_of_last_calibration && String(r.date_of_last_calibration).startsWith(ym)) last++
+      if (r.calibration_due && String(r.calibration_due).startsWith(ym)) {
+        due++
+        try {
+          if (dayjs(r.calibration_due).isBefore(today, 'day')) missed++
+        } catch {}
+      }
     }
-    if (last === 0 && due === 0) return null
+    if (last === 0 && due === 0 && missed === 0) return null
     return (
       <div style={{ marginTop: 8 }}>
         <div style={{display:'flex', alignItems:'center', gap:8}}>
           <Tag color="green">Last: {last}</Tag>
           <Tag color="blue">Due: {due}</Tag>
+          <Tag color="red">Missed: {missed}</Tag>
         </div>
       </div>
     )

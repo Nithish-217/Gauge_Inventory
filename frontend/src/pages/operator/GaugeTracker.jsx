@@ -1,20 +1,28 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Table, Button, Space, Tag, message } from 'antd'
 
 export default function OperatorGaugeTracker() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(false)
+  const [page, setPage] = useState(0)
+  const [hasMore, setHasMore] = useState(true)
+  const scrollRef = useRef(null)
   const username = (()=>{ try { return localStorage.getItem('username') || '' } catch { return '' } })()
 
-  const fetchRows = async () => {
+  const limit = 50
+  const fetchRows = async (opts = {}) => {
     if (!username) return
     setLoading(true)
     try {
-      const params = new URLSearchParams({ requested_by: username })
+      const cur = typeof opts.page === 'number' ? opts.page : page
+      const params = new URLSearchParams({ requested_by: username, limit: String(limit), offset: String(cur * limit) })
       const res = await fetch(`/gauge-tracker?${params.toString()}`)
       if (!res.ok) throw new Error(await res.text() || 'Failed to load')
       const data = await res.json()
-      setRows(Array.isArray(data) ? data.map(r=>({ ...r, key: r.id })) : [])
+      const batch = Array.isArray(data) ? data.map(r=>({ ...r, key: r.id })) : []
+      setHasMore(batch.length === limit)
+      if (cur === 0 || opts.reset) setRows(batch)
+      else setRows(prev => [...prev, ...batch])
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Failed to load')
     } finally {
@@ -22,7 +30,7 @@ export default function OperatorGaugeTracker() {
     }
   }
 
-  useEffect(() => { fetchRows() }, [username])
+  useEffect(() => { fetchRows({ page }) }, [username, page])
 
   const onReturn = async (row) => {
     try {
@@ -32,7 +40,7 @@ export default function OperatorGaugeTracker() {
       })
       if (!res.ok) throw new Error(await res.text() || 'Failed to return')
       message.success('Marked as returned')
-      fetchRows()
+      setPage(0); setHasMore(true); fetchRows({ page:0, reset:true })
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Failed to return')
     }
@@ -69,24 +77,36 @@ export default function OperatorGaugeTracker() {
     }},
   ], [username])
 
+  const onScroll = (e) => {
+    const el = e.currentTarget
+    if (!hasMore || loading) return
+    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24
+    if (nearBottom) setPage(p=>p+1)
+  }
+
   return (
     <div>
       <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
         <h2 style={{margin:0}}>My Gauge Requests</h2>
         <Space>
-          <Button onClick={fetchRows}>Refresh</Button>
+          <Button onClick={() => { setPage(0); setHasMore(true); fetchRows({ page:0, reset:true }) }}>Refresh</Button>
         </Space>
       </div>
-      <Table
-        columns={columns}
-        dataSource={rows}
-        loading={loading}
-        pagination={false}
-        bordered
-        size="small"
-        tableLayout="fixed"
-        scroll={{ x: 900 }}
-      />
+      <div style={{ maxHeight: 560, overflow: 'auto' }} onScroll={onScroll} ref={scrollRef}>
+        <Table
+          columns={columns}
+          dataSource={rows}
+          loading={loading}
+          pagination={false}
+          bordered
+          size="small"
+          tableLayout="fixed"
+          scroll={{ x: 900 }}
+        />
+        <div style={{ textAlign:'center', padding:8, color:'#888' }}>
+          {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
+        </div>
+      </div>
     </div>
   )
 }

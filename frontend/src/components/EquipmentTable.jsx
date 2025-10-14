@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import { Table, Button, Input, InputNumber, Space, message } from 'antd'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { Table, Button, Input, InputNumber, Space, message, Modal } from 'antd'
 import { ReloadOutlined, PlusOutlined } from '@ant-design/icons'
 
 export default function EquipmentTable({ mode = 'admin' }) {
@@ -8,6 +8,8 @@ export default function EquipmentTable({ mode = 'admin' }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [page, setPage] = useState(0)
+  const [hasMore, setHasMore] = useState(true)
+  const scrollRef = useRef(null)
   const [adding, setAdding] = useState(false)
   const [addErr, setAddErr] = useState('')
   const [addSuccess, setAddSuccess] = useState('')
@@ -51,10 +53,11 @@ export default function EquipmentTable({ mode = 'admin' }) {
     } catch { return '' }
   }
 
-  const fetchData = async () => {
+  const fetchData = async (opts = {}) => {
     setError(''); setLoading(true)
     try {
-      const params = new URLSearchParams({ limit: String(limit), offset: String(page * limit) })
+      const curPage = typeof opts.page === 'number' ? opts.page : page
+      const params = new URLSearchParams({ limit: String(limit), offset: String(curPage * limit) })
       if (q.trim()) params.set('q', q.trim())
       const res = await fetch(`/equipment?${params.toString()}`)
       if (!res.ok) {
@@ -63,7 +66,12 @@ export default function EquipmentTable({ mode = 'admin' }) {
       }
       const data = await res.json()
       const arr = Array.isArray(data.items) ? data.items : []
-      setItems(arr.map(r => ({ ...r, key: r.gauge_id })))
+      setHasMore(arr.length === limit)
+      if (curPage === 0 || opts.reset) {
+        setItems(arr.map(r => ({ ...r, key: r.gauge_id })))
+      } else {
+        setItems(prev => [...prev, ...arr.map(r => ({ ...r, key: r.gauge_id }))])
+      }
     } catch (err) {
       setError(typeof err?.message === 'string' ? err.message : 'Failed to load equipment')
     } finally {
@@ -71,10 +79,10 @@ export default function EquipmentTable({ mode = 'admin' }) {
     }
   }
 
-  useEffect(() => { fetchData() }, [page])
+  useEffect(() => { fetchData({ page }) }, [page])
 
   const onSearch = (e) => {
-    e.preventDefault(); setPage(0); fetchData()
+    e.preventDefault(); setPage(0); setHasMore(true); fetchData({ page: 0, reset: true })
   }
 
   const validateField = (name, value) => {
@@ -280,84 +288,85 @@ export default function EquipmentTable({ mode = 'admin' }) {
     return [...base, actionCol]
   }, [mode])
 
+  const onScroll = (e) => {
+    const el = e.currentTarget
+    if (loading || !hasMore) return
+    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24
+    if (nearBottom) setPage(p => p + 1)
+  }
+
   return (
     <div>
       <h2>Equipment Used for Calibration</h2>
 
       {/* Operator view: auto-uses logged-in username; no manual input */}
 
-      {mode === 'admin' && adding && (
-        <form onSubmit={onAdd} style={{
-          border:'1px solid rgba(0,0,0,0.08)',
-          padding:16,
-          borderRadius:12,
-          marginBottom:12,
-          background:'#ffffff',
-          boxShadow:'0 2px 8px rgba(0,0,0,0.04)'
-        }}>
+      <Modal open={mode === 'admin' && adding} title="Add Tool" onCancel={()=>setAdding(false)} footer={null} destroyOnClose>
+        <form onSubmit={onAdd}>
           <div style={{display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:12}}>
             <div className="field">
               <label className="label">Equipment Name* (text)</label>
               {fieldErrors.name_of_the_equipment && <div className="error">{fieldErrors.name_of_the_equipment}</div>}
-              <input className="input" name="name_of_the_equipment" value={form.name_of_the_equipment} onChange={onFormChange} />
+              <input className="input" name="name_of_the_equipment" value={form.name_of_the_equipment} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
             </div>
             <div className="field">
               <label className="label">IDFN* (text)</label>
               {fieldErrors.idfn_no && <div className="error">{fieldErrors.idfn_no}</div>}
-              <input className="input" name="idfn_no" value={form.idfn_no} onChange={onFormChange} />
+              <input className="input" name="idfn_no" value={form.idfn_no} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
             </div>
             <div className="field">
               <label className="label">Location (text)</label>
               {fieldErrors.location && <div className="error">{fieldErrors.location}</div>}
-              <input className="input" name="location" value={form.location} onChange={onFormChange} />
+              <input className="input" name="location" value={form.location} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
             </div>
             <div className="field">
               <label className="label">Make/Model (text)</label>
               {fieldErrors.make_model && <div className="error">{fieldErrors.make_model}</div>}
-              <input className="input" name="make_model" value={form.make_model} onChange={onFormChange} />
+              <input className="input" name="make_model" value={form.make_model} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
             </div>
             <div className="field">
               <label className="label">Receipt Date (date YYYY-MM-DD)</label>
               {fieldErrors.receipt_date && <div className="error">{fieldErrors.receipt_date}</div>}
-              <input className="input" type="date" name="receipt_date" value={form.receipt_date} onChange={onFormChange} />
+              <input className="input" type="date" name="receipt_date" value={form.receipt_date} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
             </div>
             <div className="field">
               <label className="label">Overall Measurement Uncertainty (text)</label>
               {fieldErrors.overall_measurement_uncertainty && <div className="error">{fieldErrors.overall_measurement_uncertainty}</div>}
-              <input className="input" name="overall_measurement_uncertainty" value={form.overall_measurement_uncertainty} onChange={onFormChange} />
+              <input className="input" name="overall_measurement_uncertainty" value={form.overall_measurement_uncertainty} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
             </div>
             <div className="field">
               <label className="label">Calibration Freq (months) (number)</label>
               {fieldErrors.calibration_freq_months && <div className="error">{fieldErrors.calibration_freq_months}</div>}
-              <input className="input" type="number" min="0" step="1" name="calibration_freq_months" value={form.calibration_freq_months} onChange={onFormChange} />
+              <input className="input" type="number" min="0" step="1" name="calibration_freq_months" value={form.calibration_freq_months} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
             </div>
             <div className="field">
               <label className="label">Date of Last Calibration (date YYYY-MM-DD)</label>
               {fieldErrors.date_of_last_calibration && <div className="error">{fieldErrors.date_of_last_calibration}</div>}
-              <input className="input" type="date" name="date_of_last_calibration" value={form.date_of_last_calibration} onChange={onFormChange} />
+              <input className="input" type="date" name="date_of_last_calibration" value={form.date_of_last_calibration} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
             </div>
             <div className="field">
               <label className="label">Calibration Due (date YYYY-MM-DD)</label>
               {fieldErrors.calibration_due && <div className="error">{fieldErrors.calibration_due}</div>}
-              <input className="input" type="date" name="calibration_due" value={form.calibration_due} onChange={onFormChange} />
+              <input className="input" type="date" name="calibration_due" value={form.calibration_due} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
             </div>
             <div className="field">
               <label className="label">PCR Number (digits only)</label>
               {fieldErrors.pcr_number && <div className="error">{fieldErrors.pcr_number}</div>}
-              <input className="input" type="number" inputMode="numeric" pattern="[0-9]*" name="pcr_number" value={form.pcr_number} onChange={onFormChange} />
+              <input className="input" type="number" inputMode="numeric" pattern="[0-9]*" name="pcr_number" value={form.pcr_number} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
             </div>
           </div>
           {addErr && <div className="error" style={{marginTop:8}}>{addErr}</div>}
           {addSuccess && <div style={{marginTop:8, color:'#22c55e', fontSize:13}}>{addSuccess}</div>}
-          <div className="actions" style={{marginTop:12}}>
-            <button className="btn" type="submit" disabled={addLoading}>{addLoading ? 'Saving...' : 'Save Tool'}</button>
+          <div className="actions" style={{marginTop:12, display:'flex', justifyContent:'flex-end', gap:8}}>
+            <Button onClick={()=>setAdding(false)}>Cancel</Button>
+            <Button type="primary" htmlType="submit" loading={addLoading}>{addLoading ? 'Saving...' : 'Save Tool'}</Button>
           </div>
         </form>
-      )}
+      </Modal>
 
       {error && <div className="error" style={{marginBottom: 8}}>{error}</div>}
 
-      <div style={{overflowX:'auto', border:"1px solid rgba(0,0,0,0.06)", borderRadius:12}}>
+      <div style={{overflow: 'auto', height: 'calc(100vh - 260px)', border:"1px solid rgba(0,0,0,0.06)", borderRadius:12}} onScroll={onScroll} ref={scrollRef}>
         <Table
           columns={columns}
           dataSource={items}
@@ -378,13 +387,13 @@ export default function EquipmentTable({ mode = 'admin' }) {
                   placeholder="Search by name, IDFN or location"
                   value={q}
                   onChange={(e)=>setQ(e.target.value)}
-                  onSearch={() => { setPage(0); fetchData() }}
+                  onSearch={() => { setPage(0); setHasMore(true); fetchData({ page: 0, reset: true }) }}
                   enterButton
                   style={{minWidth:320}}
                 />
               </Space>
               <Space>
-                <Button icon={<ReloadOutlined />} onClick={fetchData}>Refresh</Button>
+                <Button icon={<ReloadOutlined />} onClick={() => { setPage(0); setHasMore(true); fetchData({ page: 0, reset: true }) }}>Refresh</Button>
                 {mode === 'admin' && (
                   <Button type="primary" icon={<PlusOutlined />} onClick={()=>setAdding(v=>!v)}>
                     {adding ? 'Close' : 'Add Tool'}
@@ -394,14 +403,12 @@ export default function EquipmentTable({ mode = 'admin' }) {
             </div>
           )}
         />
+        <div style={{ textAlign: 'center', padding: 8, color: '#888' }}>
+          {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
+        </div>
       </div>
 
-      <div className="actions" style={{marginTop: 12}}>
-        <Space>
-          <Button disabled={loading || page===0} onClick={()=>setPage(p=>Math.max(0,p-1))}>Prev</Button>
-          <Button disabled={loading || items.length < limit} type="primary" onClick={()=>setPage(p=>p+1)}>Next</Button>
-        </Space>
-      </div>
+      {/* Removed Prev/Next; infinite scroll handles paging */}
     </div>
   )
 }
