@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -12,6 +13,9 @@ from barcode.writer import ImageWriter
 from .database import get_db
 from . import models, schemas
 from .security import verify_password, get_password_hash
+import os
+from minio import Minio
+from datetime import datetime as dt
 
 app = FastAPI(title="CMTI Backend", version="0.1.0")
 
@@ -137,6 +141,7 @@ def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: S
           idfn_no,
           date_of_last_calibration,
           calibration_due,
+          calibration_freq_months,
           pcr_number,
           EXISTS (
             SELECT 1 FROM public.gauge_requests gr
@@ -560,6 +565,186 @@ def accept_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Ses
     ), {"id": track_id, "accepted_by": accepted_by})
     db.commit()
     return list_gauge_tracks(limit=1, offset=0, db=db)[0]
+
+
+# =========================
+# Calibration Reports (MinIO)
+# =========================
+
+from minio import Minio  # already imported at top; this line is safe if optimizer removes dup
+import os  # already imported at top; safe
+from datetime import datetime as dt  # already imported at top; safe
+
+
+def get_minio_client():
+    endpoint = os.getenv("MINIO_ENDPOINT", "10.207.163.138:9000").replace("http://", "").replace("https://", "")
+    access_key = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+    secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+    secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
+    return Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
+
+
+def get_minio_bucket():
+    return os.getenv("MINIO_BUCKET", "gagecalibration")
+
+
+def ensure_reports_table(db: Session):
+    db.execute(text(
+        """
+        CREATE TABLE IF NOT EXISTS public.calibration_reports (
+          gauge_id INTEGER PRIMARY KEY,
+          idfn_no TEXT,
+          object_key TEXT NOT NULL,
+          updated_by TEXT,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """
+    ))
+
+
+@app.get("/reports")
+def list_reports(limit: int = 200, offset: int = 0, q: str | None = None, db: Session = Depends(get_db)):
+    ensure_reports_table(db)
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    where = ""
+    params = {"limit": limit, "offset": offset}
+    if q:
+        where = "WHERE e.name_of_the_equipment ILIKE :qs OR e.idfn_no ILIKE :qs OR e.location ILIKE :qs"
+        params["qs"] = f"%{q}%"
+    sql = text(
+        f"""
+        SELECT 
+          e.gauge_id,
+          e.name_of_the_equipment,
+          e.idfn_no,
+          e.location,
+          e.make_model,
+          e.date_of_last_calibration,
+          e.calibration_due,
+          e.calibration_freq_months,
+          r.object_key,
+          r.updated_by,
+          r.updated_at
+        FROM public.equipment_used_for_calibration e
+        LEFT JOIN public.calibration_reports r ON r.gauge_id = e.gauge_id
+        {where}
+        ORDER BY e.gauge_id
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    rows = db.execute(sql, params).mappings().all()
+    return {"items": list(rows), "limit": limit, "offset": offset, "count": len(rows)}
+
+
+def _allowed_ext(filename: str) -> str:
+    name = (filename or "").lower()
+    for ext in (".pdf", ".doc", ".docx", ".csv"):
+        if name.endswith(ext):
+            return ext.lstrip('.')
+    raise HTTPException(status_code=400, detail="Unsupported file type. Allowed: pdf, doc, docx, csv")
+
+
+@app.post("/reports/{gauge_id}")
+async def upload_report(
+    gauge_id: int,
+    report: UploadFile = File(...),
+    last_calibration_date: str = Form(...),
+    calibration_freq_months: int = Form(...),
+    updated_by: str | None = Form(None),
+    db: Session = Depends(get_db),
+):
+    ensure_reports_table(db)
+    eq = db.execute(text("SELECT idfn_no FROM public.equipment_used_for_calibration WHERE gauge_id = :gid"), {"gid": gauge_id}).mappings().first()
+    if not eq:
+        raise HTTPException(status_code=404, detail="Gauge not found")
+    idfn = eq["idfn_no"]
+    ext = _allowed_ext(report.filename or "")
+    object_key = f"reports/{idfn}.{ext}"
+
+    mc = get_minio_client()
+    bucket = get_minio_bucket()
+    try:
+        if not mc.bucket_exists(bucket):
+            mc.make_bucket(bucket)
+    except Exception:
+        pass
+
+    data = await report.read()
+    mc.put_object(bucket, object_key, io.BytesIO(data), length=len(data), content_type=report.content_type or "application/octet-stream")
+
+    # compute due
+    due = None
+    try:
+        if last_calibration_date and calibration_freq_months is not None:
+            d = dt.strptime(last_calibration_date, "%Y-%m-%d").date()
+            months = int(calibration_freq_months)
+            y = d.year + (d.month - 1 + months) // 12
+            m = (d.month - 1 + months) % 12 + 1
+            import calendar
+            last_day = calendar.monthrange(y, m)[1]
+            day = min(d.day, last_day)
+            due = dt(year=y, month=m, day=day).date().isoformat()
+    except Exception:
+        pass
+
+    db.execute(text(
+        """
+        UPDATE public.equipment_used_for_calibration
+        SET date_of_last_calibration = CAST(:last AS DATE),
+            calibration_freq_months = CAST(:freq AS INTEGER),
+            calibration_due = CAST(:due AS DATE)
+        WHERE gauge_id = :gid
+        """
+    ), {"last": last_calibration_date, "freq": calibration_freq_months, "due": due, "gid": gauge_id})
+
+    db.execute(text(
+        """
+        INSERT INTO public.calibration_reports (gauge_id, idfn_no, object_key, updated_by)
+        VALUES (:gid, :idfn, :okey, :user)
+        ON CONFLICT (gauge_id) DO UPDATE
+          SET idfn_no = EXCLUDED.idfn_no,
+              object_key = EXCLUDED.object_key,
+              updated_by = EXCLUDED.updated_by,
+              updated_at = NOW()
+        """
+    ), {"gid": gauge_id, "idfn": idfn, "okey": object_key, "user": updated_by})
+    db.commit()
+    return {"success": True, "object_key": object_key}
+
+
+def _object_response(bucket: str, object_key: str, inline: bool):
+    mc = get_minio_client()
+    obj = mc.get_object(bucket, object_key)
+    ctype = "application/octet-stream"
+    if object_key.endswith(".pdf"): ctype = "application/pdf"
+    elif object_key.endswith(".csv"): ctype = "text/csv"
+    elif object_key.endswith(".doc"): ctype = "application/msword"
+    elif object_key.endswith(".docx"): ctype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    headers = {"Content-Type": ctype}
+    if inline:
+        headers["Content-Disposition"] = f"inline; filename={os.path.basename(object_key)}"
+    else:
+        headers["Content-Disposition"] = f"attachment; filename={os.path.basename(object_key)}"
+    return StreamingResponse(obj, headers=headers, media_type=ctype)
+
+
+@app.get("/reports/{gauge_id}/view")
+def view_report(gauge_id: int, db: Session = Depends(get_db)):
+    ensure_reports_table(db)
+    row = db.execute(text("SELECT object_key FROM public.calibration_reports WHERE gauge_id = :gid"), {"gid": gauge_id}).mappings().first()
+    if not row or not row.get("object_key"):
+        raise HTTPException(status_code=404, detail="Report not found")
+    return _object_response(get_minio_bucket(), row["object_key"], inline=True)
+
+
+@app.get("/reports/{gauge_id}/download")
+def download_report(gauge_id: int, db: Session = Depends(get_db)):
+    ensure_reports_table(db)
+    row = db.execute(text("SELECT object_key FROM public.calibration_reports WHERE gauge_id = :gid"), {"gid": gauge_id}).mappings().first()
+    if not row or not row.get("object_key"):
+        raise HTTPException(status_code=404, detail="Report not found")
+    return _object_response(get_minio_bucket(), row["object_key"], inline=False)
 
 
 # Barcode: Code128 by IDFN -> payload "IDFN_LASTCAL_DUE"
