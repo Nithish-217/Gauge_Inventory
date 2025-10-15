@@ -861,6 +861,21 @@ def ensure_reports_table(db: Session):
     ))
 
 
+# --------------
+# Report storage
+# --------------
+
+def get_report_storage_mode() -> str:
+    # 'minio' or 'local'
+    return (os.getenv("REPORT_STORAGE", "minio") or "minio").strip().lower()
+
+
+def get_report_storage_dir() -> str:
+    # Base directory for local storage
+    base = os.getenv("REPORT_STORAGE_DIR", "storage")
+    return os.path.abspath(base)
+
+
 @app.get("/reports")
 def list_reports(limit: int = 200, offset: int = 0, q: str | None = None, db: Session = Depends(get_db)):
     ensure_reports_table(db)
@@ -919,18 +934,49 @@ async def upload_report(
         raise HTTPException(status_code=404, detail="Gauge not found")
     idfn = eq["idfn_no"]
     ext = _allowed_ext(report.filename or "")
-    object_key = f"reports/{idfn}.{ext}"
-
-    mc = get_minio_client()
-    bucket = get_minio_bucket()
-    try:
-        if not mc.bucket_exists(bucket):
-            mc.make_bucket(bucket)
-    except Exception:
-        pass
-
+    storage_mode = get_report_storage_mode()
     data = await report.read()
-    mc.put_object(bucket, object_key, io.BytesIO(data), length=len(data), content_type=report.content_type or "application/octet-stream")
+
+    object_key: str
+    if storage_mode == "local":
+        # Save to local filesystem
+        base_dir = get_report_storage_dir()
+        reports_dir = os.path.join(base_dir, "reports")
+        try:
+            os.makedirs(reports_dir, exist_ok=True)
+        except Exception:
+            pass
+        fname = f"{idfn}.{ext}"
+        fpath = os.path.join(reports_dir, fname)
+        with open(fpath, "wb") as f:
+            f.write(data)
+        # Persist key with 'local/' prefix so readers know to use filesystem
+        object_key = f"local/reports/{fname}"
+    else:
+        # Try MinIO first; on failure, fallback to local
+        object_key = f"reports/{idfn}.{ext}"
+        try:
+            mc = get_minio_client()
+            bucket = get_minio_bucket()
+            try:
+                if not mc.bucket_exists(bucket):
+                    mc.make_bucket(bucket)
+            except Exception:
+                pass
+            mc.put_object(bucket, object_key, io.BytesIO(data), length=len(data), content_type=report.content_type or "application/octet-stream")
+        except Exception:
+            # Fallback to local storage
+            base_dir = get_report_storage_dir()
+            reports_dir = os.path.join(base_dir, "reports")
+            try:
+                os.makedirs(reports_dir, exist_ok=True)
+            except Exception:
+                pass
+            fname = f"{idfn}.{ext}"
+            fpath = os.path.join(reports_dir, fname)
+            with open(fpath, "wb") as f:
+                f.write(data)
+            object_key = f"local/reports/{fname}"
 
     # compute due
     due = None
@@ -973,8 +1019,47 @@ async def upload_report(
 
 
 def _object_response(bucket: str, object_key: str, inline: bool):
-    mc = get_minio_client()
-    obj = mc.get_object(bucket, object_key)
+    # Serve from local storage if the key indicates local or storage mode is local
+    if object_key.startswith("local/") or get_report_storage_mode() == "local":
+        base_dir = get_report_storage_dir()
+        # If key is prefixed with 'local/', drop it; otherwise use the key as-is (e.g., 'reports/IDFN.pdf')
+        rel = object_key[len("local/"):] if object_key.startswith("local/") else object_key
+        fpath = os.path.join(base_dir, rel)
+        if not os.path.isfile(fpath):
+            raise HTTPException(status_code=404, detail="Report file not found")
+        try:
+            with open(fpath, "rb") as f:
+                data = f.read()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read report: {str(e)}")
+    else:
+        mc = get_minio_client()
+        # Validate bucket and object to avoid long hangs and return helpful errors
+        try:
+            if not mc.bucket_exists(bucket):
+                raise HTTPException(status_code=404, detail="Report bucket not found")
+        except Exception as e:
+            # Connection or auth issue
+            raise HTTPException(status_code=502, detail=f"Object store not reachable: {str(e)}")
+
+        try:
+            # Will raise if object not found
+            mc.stat_object(bucket, object_key)
+        except Exception:
+            raise HTTPException(status_code=404, detail="Report file not found")
+
+        # Fetch the object; if the stream errors, surface a clear message
+        try:
+            obj = mc.get_object(bucket, object_key)
+            data = obj.read()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to fetch report: {str(e)}")
+        finally:
+            try:
+                obj.close()
+            except Exception:
+                pass
+
     ctype = "application/octet-stream"
     if object_key.endswith(".pdf"): ctype = "application/pdf"
     elif object_key.endswith(".csv"): ctype = "text/csv"
@@ -985,7 +1070,7 @@ def _object_response(bucket: str, object_key: str, inline: bool):
         headers["Content-Disposition"] = f"inline; filename={os.path.basename(object_key)}"
     else:
         headers["Content-Disposition"] = f"attachment; filename={os.path.basename(object_key)}"
-    return StreamingResponse(obj, headers=headers, media_type=ctype)
+    return StreamingResponse(io.BytesIO(data), headers=headers, media_type=ctype)
 
 
 @app.get("/reports/{gauge_id}/view")
