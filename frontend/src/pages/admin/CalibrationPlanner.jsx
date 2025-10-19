@@ -1,5 +1,5 @@
 import React from 'react'
-import { Calendar, Badge, Button, Space, Spin, Tooltip, Modal, List, Tag, Select, Segmented } from 'antd'
+import { Calendar, Badge, Button, Space, Spin, Tooltip, Modal, List, Tag, Select, Segmented, message } from 'antd'
 import { LeftOutlined, RightOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 
@@ -24,10 +24,10 @@ export default function CalibrationPlanner() {
       const eqName = r.name_of_the_equipment || `Gauge ${r.gauge_id}`
       const eq = `[${r.gauge_id ?? '-'}] ${eqName}`
       if (r.date_of_last_calibration) {
-        push(r.date_of_last_calibration, { type: 'success', label: `Last: ${eq}`, eq })
+        push(r.date_of_last_calibration, { type: 'success', label: `Last: ${eq}`, eq, gauge_id: r.gauge_id })
       }
       if (r.calibration_due) {
-        push(r.calibration_due, { type: 'processing', label: `Due: ${eq}`, eq })
+        push(r.calibration_due, { type: 'processing', label: `Due: ${eq}`, eq, gauge_id: r.gauge_id })
       }
     }
     return map
@@ -60,6 +60,25 @@ export default function CalibrationPlanner() {
 
   React.useEffect(() => { fetchAll() }, [])
 
+  const adminName = React.useMemo(() => {
+    try { return localStorage.getItem('username') || 'Admin' } catch { return 'Admin' }
+  }, [])
+
+  const sendReminder = async (gaugeId) => {
+    try {
+      const res = await fetch('/reminders/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gauge_id: gaugeId, admin_name: adminName })
+      })
+      if (!res.ok) throw new Error((await res.text()) || 'Failed to send reminder')
+      const data = await res.json().catch(()=>({success:true,message:'Reminder sent'}))
+      message.success(data.message || 'Reminder email sent')
+    } catch (e) {
+      message.error(typeof e?.message === 'string' ? e.message : 'Failed to send reminder')
+    }
+  }
+
   const dateCellRender = (value) => {
     const key = value.format('YYYY-MM-DD')
     const list = eventMap[key] || []
@@ -70,13 +89,13 @@ export default function CalibrationPlanner() {
           const isDue = ev.type === 'processing'
           const isOverdue = isDue && dayjs(key).isBefore(dayjs(), 'day')
           const bg = isDue
-            ? (isOverdue ? 'rgba(220,38,38,0.12)' : 'rgba(59,130,246,0.12)')
+            ? (isOverdue ? 'rgba(220,38,38,0.12)' : 'rgba(245,158,11,0.12)')
             : 'rgba(16,185,129,0.12)'
           const border = isDue
-            ? (isOverdue ? '1px solid rgba(220,38,38,0.35)' : '1px solid rgba(59,130,246,0.3)')
+            ? (isOverdue ? '1px solid rgba(220,38,38,0.35)' : '1px solid rgba(245,158,11,0.3)')
             : '1px solid rgba(16,185,129,0.3)'
           const color = isDue
-            ? (isOverdue ? '#dc2626' : '#2563eb')
+            ? (isOverdue ? '#dc2626' : '#d97706')
             : '#059669'
           return (
             <Tooltip title={ev.label} key={idx}>
@@ -126,7 +145,7 @@ export default function CalibrationPlanner() {
       <div style={{ marginTop: 8 }}>
         <div style={{display:'flex', alignItems:'center', gap:8}}>
           <Tag color="green">Last: {last}</Tag>
-          <Tag color="blue">Due: {due}</Tag>
+          <Tag color="gold">Due: {due}</Tag>
           <Tag color="red">Missed: {missed}</Tag>
         </div>
       </div>
@@ -140,7 +159,7 @@ export default function CalibrationPlanner() {
         <Space>
           <div style={{display:'flex',alignItems:'center',gap:12}}>
             <Badge status="success" text={<span style={{fontSize:12}}>Last calibration</span>} />
-            <Badge status="processing" text={<span style={{fontSize:12}}>Calibration due</span>} />
+            <Badge color="#f59e0b" text={<span style={{fontSize:12}}>Calibration due</span>} />
             <Badge status="error" text={<span style={{fontSize:12}}>Missed (overdue)</span>} />
           </div>
           <Button onClick={fetchAll}>Refresh</Button>
@@ -212,9 +231,13 @@ export default function CalibrationPlanner() {
           renderItem={(ev)=>{
             const isDue = ev.type === 'processing'
             return (
-              <List.Item style={{padding:'6px 0'}}>
+              <List.Item style={{padding:'6px 0'}}
+                actions={isDue && ev.gauge_id ? [
+                  <Button key="remind" type="link" onClick={()=>sendReminder(ev.gauge_id)}>Send Reminder</Button>
+                ] : undefined}
+              >
                 <List.Item.Meta
-                  avatar={<span style={{display:'inline-block', width:10, height:10, borderRadius:3, background: isDue ? '#2563eb' : '#059669'}} />}
+                  avatar={<span style={{display:'inline-block', width:10, height:10, borderRadius:3, background: isDue ? '#d97706' : '#059669'}} />}
                   title={<span>{ev.eq}</span>}
                   description={<span style={{color:'#666'}}>{ev.label}</span>}
                 />

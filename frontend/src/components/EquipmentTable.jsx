@@ -14,10 +14,28 @@ export default function EquipmentTable({ mode = 'admin' }) {
   const [addErr, setAddErr] = useState('')
   const [addSuccess, setAddSuccess] = useState('')
   const [addLoading, setAddLoading] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editLoading, setEditLoading] = useState(false)
+  const [editErr, setEditErr] = useState('')
+  const [editRow, setEditRow] = useState(null)
+  const [editForm, setEditForm] = useState({
+    name_of_the_equipment: '',
+    location: '',
+    receipt_date: '',
+    make_model: '',
+    idfn_no: '',
+    overall_measurement_uncertainty: '',
+    calibration_freq_months: '',
+    date_of_last_calibration: '',
+    calibration_due: '',
+    pcr_number: ''
+  })
   const [requestedBy, setRequestedBy] = useState(() => {
     try { return localStorage.getItem('username') || 'operator' } catch { return 'operator' }
   })
   const [qty, setQty] = useState({}) // { [gauge_id]: number }
+  const [requesting, setRequesting] = useState({}) // { [gauge_id]: boolean }
+  const [requestedMap, setRequestedMap] = useState({}) // { [gauge_id]: boolean }
   const [fieldErrors, setFieldErrors] = useState({}) // { [name]: message }
   const [form, setForm] = useState({
     name_of_the_equipment: '',
@@ -53,6 +71,22 @@ export default function EquipmentTable({ mode = 'admin' }) {
     } catch { return '' }
   }
 
+  const onEditFormChange = (e) => {
+    const { name, value } = e.target
+    setEditForm(prev => {
+      const next = { ...prev, [name]: value }
+      if ((name === 'date_of_last_calibration' || name === 'calibration_freq_months')) {
+        const last = name === 'date_of_last_calibration' ? value : next.date_of_last_calibration
+        const freq = name === 'calibration_freq_months' ? value : next.calibration_freq_months
+        const months = String(freq || '').trim()
+        if (last && /^\d{4}-\d{2}-\d{2}$/.test(String(last)) && /^\d+$/.test(months)) {
+          next.calibration_due = addMonthsISO(last, Number(months)) || next.calibration_due
+        }
+      }
+      return next
+    })
+  }
+
   const fetchData = async (opts = {}) => {
     setError(''); setLoading(true)
     try {
@@ -80,6 +114,30 @@ export default function EquipmentTable({ mode = 'admin' }) {
   }
 
   useEffect(() => { fetchData({ page }) }, [page])
+
+  // Initialize requestedMap for the logged-in operator to block duplicate requests across reloads
+  useEffect(() => {
+    let cancelled = false
+    const initRequested = async () => {
+      try {
+        const rb = (requestedBy || '').trim()
+        if (!rb) return
+        const res = await fetch(`/gauge-tracker?requested_by=${encodeURIComponent(rb)}`)
+        if (!res.ok) return
+        const data = await res.json()
+        const arr = Array.isArray(data) ? data : []
+        const map = {}
+        for (const r of arr) {
+          const status = String(r.status||'').toLowerCase()
+          const open = (status === 'requested' || status === 'accepted') && !r.returned_at
+          if (open && r.gauge_id) map[Number(r.gauge_id)] = true
+        }
+        if (!cancelled) setRequestedMap(map)
+      } catch {}
+    }
+    initRequested()
+    return () => { cancelled = true }
+  }, [requestedBy])
 
   const onSearch = (e) => {
     e.preventDefault(); setPage(0); setHasMore(true); fetchData({ page: 0, reset: true })
@@ -206,11 +264,81 @@ export default function EquipmentTable({ mode = 'admin' }) {
     }
   }
 
-  const onRequest = async (row) => {
+  const openEdit = (row) => {
+    if (!row) return
+    setEditErr('')
+    setEditRow(row)
+    const toISO = (v) => {
+      try {
+        if (!v) return ''
+        const d = new Date(v)
+        if (isNaN(d.getTime())) return String(v)
+        const yy = d.getFullYear()
+        const mm = String(d.getMonth()+1).padStart(2,'0')
+        const dd = String(d.getDate()).padStart(2,'0')
+        return `${yy}-${mm}-${dd}`
+      } catch { return '' }
+    }
+    setEditForm({
+      name_of_the_equipment: row.name_of_the_equipment || '',
+      location: row.location || '',
+      receipt_date: toISO(row.receipt_date || ''),
+      make_model: row.make_model || '',
+      idfn_no: row.idfn_no || '',
+      overall_measurement_uncertainty: row.overall_measurement_uncertainty || '',
+      calibration_freq_months: row.calibration_freq_months ?? '',
+      date_of_last_calibration: toISO(row.date_of_last_calibration || ''),
+      calibration_due: toISO(row.calibration_due || ''),
+      pcr_number: row.pcr_number ?? ''
+    })
+    setEditing(true)
+  }
+
+  const onUpdate = async (e) => {
+    e.preventDefault()
+    if (!editRow) return
+    setEditErr('')
     try {
-      if (!row) { setError('Row not found.'); return }
+      setEditLoading(true)
       const payload = {
-        gauge_id: Number(row.gauge_id),
+        ...editForm,
+        calibration_freq_months: editForm.calibration_freq_months === '' ? null : Number(editForm.calibration_freq_months),
+        pcr_number: editForm.pcr_number === '' ? null : Number(editForm.pcr_number),
+        receipt_date: editForm.receipt_date || null,
+        date_of_last_calibration: editForm.date_of_last_calibration || null,
+        calibration_due: editForm.calibration_due || null,
+        location: editForm.location || null,
+        make_model: editForm.make_model || null,
+        overall_measurement_uncertainty: editForm.overall_measurement_uncertainty || null,
+      }
+      const res = await fetch(`/equipment/${editRow.gauge_id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (!res.ok) {
+        const txt = await res.text()
+        throw new Error(txt || 'Failed to update tool')
+      }
+      const updated = await res.json()
+      setItems(prev => prev.map(r => r.gauge_id === updated.gauge_id ? { ...r, ...updated, key: updated.gauge_id } : r))
+      setEditing(false)
+    } catch (err) {
+      setEditErr(typeof err?.message === 'string' ? err.message : 'Failed to update tool')
+    } finally {
+      setEditLoading(false)
+    }
+  }
+
+  const onRequest = async (row) => {
+    const gid = Number(row?.gauge_id)
+    if (!gid) { setError('Row not found.'); return }
+    // Block if already requesting or requested
+    if (requesting[gid] || requestedMap[gid]) return
+    try {
+      setRequesting(prev => ({ ...prev, [gid]: true }))
+      const payload = {
+        gauge_id: gid,
         name_of_the_equipment: row.name_of_the_equipment,
         idfn_no: row.idfn_no,
         location: row.location || null,
@@ -229,7 +357,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
         const fallback = await fetch('/requests', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ gauge_id: Number(row.gauge_id), quantity: 1, requested_by: requestedBy || null })
+          body: JSON.stringify({ gauge_id: gid, quantity: 1, requested_by: requestedBy || null })
         })
         if (!fallback.ok) {
           const raw = await fallback.text()
@@ -242,14 +370,18 @@ export default function EquipmentTable({ mode = 'admin' }) {
             throw new Error(msg)
           }
         }
+        setRequestedMap(prev => ({ ...prev, [gid]: true }))
         message.success('Request submitted')
         return
       }
+      setRequestedMap(prev => ({ ...prev, [gid]: true }))
       message.success('Request saved to Gauge Tracker')
     } catch (err) {
       const msg = typeof err?.message === 'string' ? err.message : 'Failed to save request'
       setError(msg)
       try { message.error(msg) } catch {}
+    } finally {
+      setRequesting(prev => ({ ...prev, [gid]: false }))
     }
   }
 
@@ -269,24 +401,32 @@ export default function EquipmentTable({ mode = 'admin' }) {
           title: 'Actions', key: 'actions', fixed: 'right', align: 'right',
           render: (_, row) => (
             <Space>
+              <Button onClick={() => openEdit(row)}>Edit</Button>
               <Button danger onClick={() => onDelete(row.gauge_id)}>Delete</Button>
             </Space>
           )
         }
       : {
           title: 'Request', key: 'request', fixed: 'right', align: 'right',
-          render: (_, row) => (
-            <Space>
-              <Button
-                type="primary"
-                onClick={() => onRequest(row)}
-                disabled={!!row.is_unavailable}
-              >{row.is_unavailable ? 'Unavailable' : 'Request'}</Button>
-            </Space>
-          )
+          render: (_, row) => {
+            const gid = Number(row.gauge_id)
+            const isReq = !!requestedMap[gid]
+            const isLoading = !!requesting[gid]
+            const disabled = !!row.is_unavailable || isReq || isLoading
+            const label = row.is_unavailable ? 'Unavailable' : (isReq ? 'Requested' : (isLoading ? 'Requesting...' : 'Request'))
+            return (
+              <Space>
+                <Button
+                  type="primary"
+                  onClick={() => onRequest(row)}
+                  disabled={disabled}
+                >{label}</Button>
+              </Space>
+            )
+          }
         }
     return [...base, actionCol]
-  }, [mode])
+  }, [mode, requesting, requestedMap])
 
   const onScroll = (e) => {
     const el = e.currentTarget
@@ -340,7 +480,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
               <input className="input" type="number" min="0" step="1" name="calibration_freq_months" value={form.calibration_freq_months} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
             </div>
             <div className="field">
-              <label className="label">Date of Last Calibration (date YYYY-MM-DD)</label>
+              <label className="label">Last Calibrated on</label>
               {fieldErrors.date_of_last_calibration && <div className="error">{fieldErrors.date_of_last_calibration}</div>}
               <input className="input" type="date" name="date_of_last_calibration" value={form.date_of_last_calibration} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
             </div>
@@ -360,6 +500,58 @@ export default function EquipmentTable({ mode = 'admin' }) {
           <div className="actions" style={{marginTop:12, display:'flex', justifyContent:'flex-end', gap:8}}>
             <Button onClick={()=>setAdding(false)}>Cancel</Button>
             <Button type="primary" htmlType="submit" loading={addLoading}>{addLoading ? 'Saving...' : 'Save Tool'}</Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={mode === 'admin' && editing} title={`Edit Tool [${editRow?.gauge_id ?? ''}]`} onCancel={()=>setEditing(false)} footer={null} destroyOnClose>
+        <form onSubmit={onUpdate}>
+          <div style={{display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:12}}>
+            <div className="field">
+              <label className="label">Equipment Name* (text)</label>
+              <input className="input" name="name_of_the_equipment" value={editForm.name_of_the_equipment} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            </div>
+            <div className="field">
+              <label className="label">IDFN* (text)</label>
+              <input className="input" name="idfn_no" value={editForm.idfn_no} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            </div>
+            <div className="field">
+              <label className="label">Location (text)</label>
+              <input className="input" name="location" value={editForm.location} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            </div>
+            <div className="field">
+              <label className="label">Make/Model (text)</label>
+              <input className="input" name="make_model" value={editForm.make_model} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            </div>
+            <div className="field">
+              <label className="label">Receipt Date (date YYYY-MM-DD)</label>
+              <input className="input" type="date" name="receipt_date" value={editForm.receipt_date} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            </div>
+            <div className="field">
+              <label className="label">Overall Measurement Uncertainty (text)</label>
+              <input className="input" name="overall_measurement_uncertainty" value={editForm.overall_measurement_uncertainty} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            </div>
+            <div className="field">
+              <label className="label">Calibration Freq (months) (number)</label>
+              <input className="input" type="number" min="0" step="1" name="calibration_freq_months" value={editForm.calibration_freq_months} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            </div>
+            <div className="field">
+              <label className="label">Last Calibrated on</label>
+              <input className="input" type="date" name="date_of_last_calibration" value={editForm.date_of_last_calibration} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            </div>
+            <div className="field">
+              <label className="label">Calibration Due (date YYYY-MM-DD)</label>
+              <input className="input" type="date" name="calibration_due" value={editForm.calibration_due} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            </div>
+            <div className="field">
+              <label className="label">PCR Number (digits only)</label>
+              <input className="input" type="number" inputMode="numeric" pattern="[0-9]*" name="pcr_number" value={editForm.pcr_number} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            </div>
+          </div>
+          {editErr && <div className="error" style={{marginTop:8}}>{editErr}</div>}
+          <div className="actions" style={{marginTop:12, display:'flex', justifyContent:'flex-end', gap:8}}>
+            <Button onClick={()=>setEditing(false)}>Cancel</Button>
+            <Button type="primary" htmlType="submit" loading={editLoading}>{editLoading ? 'Saving...' : 'Save Changes'}</Button>
           </div>
         </form>
       </Modal>

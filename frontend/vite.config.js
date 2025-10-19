@@ -47,11 +47,14 @@ export default defineConfig({
         changeOrigin: true,
         secure: false
       },
-      '/admin': {
+      '/reminders': {
         target: 'http://localhost:8000',
         changeOrigin: true,
         secure: false
-      }
+      },
+      // Note: Do not proxy '/admin' because frontend client-side routes like
+      // '/admin/report-manager' must be served by Vite (SPA). If you add specific
+      // admin API endpoints later, proxy those exact paths instead (e.g. '/admin/reminders').
     }
   }
 })

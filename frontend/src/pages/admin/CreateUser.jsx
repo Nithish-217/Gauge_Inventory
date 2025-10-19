@@ -12,6 +12,7 @@ export default function CreateUser() {
   const [pwdModal, setPwdModal] = useState({ open: false, user: null })
   const [pwdForm] = Form.useForm()
   const [showCreate, setShowCreate] = useState(false)
+  const [q, setQ] = useState('')
 
   const onChange = (e) => {
     const { name, value } = e.target
@@ -107,12 +108,12 @@ export default function CreateUser() {
   }
 
   const columns = useMemo(() => [
-    { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
-    { title: 'Username', dataIndex: 'username', key: 'username' },
-    { title: 'Email', dataIndex: 'email', key: 'email' },
-    { title: 'Role', dataIndex: 'role', key: 'role', width: 120, render: (r)=> r?.toUpperCase() },
-    { title: 'Created', dataIndex: 'created_at', key: 'created_at', width: 200, render: (v)=> v ? new Date(v).toLocaleString() : '' },
-    { title: 'Actions', key: 'actions', width: 220, align: 'right', render: (_, row) => (
+    { title: 'ID', dataIndex: 'id', key: 'id', width: 70 },
+    { title: 'Username', dataIndex: 'username', key: 'username', ellipsis: true },
+    { title: 'Email', dataIndex: 'email', key: 'email', ellipsis: true },
+    { title: 'Role', dataIndex: 'role', key: 'role', width: 100, render: (r)=> r?.toUpperCase() },
+    { title: 'Created', dataIndex: 'created_at', key: 'created_at', width: 160, render: (v)=> v ? new Date(v).toLocaleString() : '' },
+    { title: 'Actions', key: 'actions', width: 180, align: 'right', render: (_, row) => (
       <Space>
         <Button icon={<KeyOutlined />} onClick={()=>openChangePassword(row)}>Change Password</Button>
         <Button danger icon={<DeleteOutlined />} onClick={()=>onDelete(row.id)}>Delete</Button>
@@ -120,12 +121,32 @@ export default function CreateUser() {
     )}
   ], [])
 
+  const filteredUsers = useMemo(() => {
+    const term = (q || '').toLowerCase().trim()
+    if (!term) return users
+    return users.filter(u =>
+      String(u.username||'').toLowerCase().includes(term) ||
+      String(u.email||'').toLowerCase().includes(term) ||
+      String(u.role||'').toLowerCase().includes(term)
+    )
+  }, [users, q])
+
   return (
     <div>
-      <h2>Users</h2>
-
-      <div style={{marginBottom:16}}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={()=>setShowCreate(true)}>Create a new user</Button>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
+        <h2 style={{margin:0}}>Users</h2>
+        <Space>
+          <Input.Search
+            allowClear
+            placeholder="Search by username, email, or role"
+            value={q}
+            onChange={(e)=>setQ(e.target.value)}
+            onSearch={()=>{}}
+            style={{minWidth: 320}}
+          />
+          <Button icon={<ReloadOutlined />} onClick={fetchUsers}>Refresh</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={()=>setShowCreate(true)}>Create</Button>
+        </Space>
       </div>
 
       <Modal
@@ -156,7 +177,18 @@ export default function CreateUser() {
       </Modal>
 
       <div style={{border:'1px solid rgba(0,0,0,0.06)', borderRadius:12, height:'calc(100vh - 260px)', overflow:'auto'}}>
-        <Table columns={columns} dataSource={users} loading={usersLoading} pagination={false} />
+        <Table
+          columns={columns}
+          dataSource={filteredUsers}
+          loading={usersLoading}
+          pagination={false}
+          bordered
+          size="middle"
+          sticky
+          tableLayout="auto"
+          className="ant-table-striped"
+          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+        />
       </div>
 
       <Modal

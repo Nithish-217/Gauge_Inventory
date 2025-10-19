@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Table, Button, Space, Tag, message } from 'antd'
+import { Table, Button, Space, Tag, message, Popover, Select, DatePicker } from 'antd'
+import { FilterOutlined } from '@ant-design/icons'
+import dayjs from 'dayjs'
 
 export default function OperatorGaugeTracker() {
   const [rows, setRows] = useState([])
@@ -8,6 +10,9 @@ export default function OperatorGaugeTracker() {
   const [hasMore, setHasMore] = useState(true)
   const scrollRef = useRef(null)
   const username = (()=>{ try { return localStorage.getItem('username') || '' } catch { return '' } })()
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [statusFilter, setStatusFilter] = useState(undefined)
+  const [dateFilter, setDateFilter] = useState(null)
 
   const limit = 50
   const fetchRows = async (opts = {}) => {
@@ -48,7 +53,6 @@ export default function OperatorGaugeTracker() {
 
   const columns = useMemo(() => [
     { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
-    { title: 'Gauge ID', dataIndex: 'gauge_id', key: 'gauge_id', width: 90 },
     { title: 'Equipment', dataIndex: 'name_of_the_equipment', key: 'name_of_the_equipment', width: 220, ellipsis: true },
     { title: 'IDFN', dataIndex: 'idfn_no', key: 'idfn_no', width: 120, ellipsis: true },
     { title: 'Status', dataIndex: 'status', key: 'status', width: 120, render:(v)=> (v||'').toUpperCase() },
@@ -77,6 +81,19 @@ export default function OperatorGaugeTracker() {
     }},
   ], [username])
 
+  const filteredRows = useMemo(() => {
+    return rows.filter(r => {
+      const sOk = statusFilter ? String(r.status||'').toLowerCase() === String(statusFilter).toLowerCase() : true
+      const dOk = dateFilter ? (()=>{
+        try {
+          const dt = r.requested_at ? dayjs(r.requested_at) : null
+          return dt ? dt.isSame(dateFilter, 'day') : false
+        } catch { return false }
+      })() : true
+      return sOk && dOk
+    })
+  }, [rows, statusFilter, dateFilter])
+
   const onScroll = (e) => {
     const el = e.currentTarget
     if (!hasMore || loading) return
@@ -89,19 +106,63 @@ export default function OperatorGaugeTracker() {
       <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
         <h2 style={{margin:0}}>My Gauge Requests</h2>
         <Space>
+          <Popover
+            title={null}
+            trigger="click"
+            open={filterOpen}
+            onOpenChange={setFilterOpen}
+            content={(
+              <div style={{display:'grid', gap:8, minWidth:240}}>
+                <div>
+                  <div style={{fontSize:12, color:'#666'}}>Status</div>
+                  <Select
+                    allowClear
+                    placeholder="Select status"
+                    value={statusFilter}
+                    onChange={(v)=>setStatusFilter(v)}
+                    options={[
+                      {label:'Requested', value:'requested'},
+                      {label:'Accepted', value:'accepted'},
+                      {label:'Rejected', value:'rejected'},
+                      {label:'Returned', value:'returned'},
+                    ]}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+                <div>
+                  <div style={{fontSize:12, color:'#666'}}>Date</div>
+                  <DatePicker
+                    allowClear
+                    value={dateFilter}
+                    onChange={(d)=>setDateFilter(d)}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+                <div style={{display:'flex', justifyContent:'flex-end', gap:8}}>
+                  <Button onClick={()=>{ setStatusFilter(undefined); setDateFilter(null) }}>Clear</Button>
+                  <Button type="primary" onClick={()=>setFilterOpen(false)}>Apply</Button>
+                </div>
+              </div>
+            )}
+          >
+            <Button icon={<FilterOutlined />}>Filter</Button>
+          </Popover>
           <Button onClick={() => { setPage(0); setHasMore(true); fetchRows({ page:0, reset:true }) }}>Refresh</Button>
         </Space>
       </div>
-      <div style={{ maxHeight: 560, overflow: 'auto' }} onScroll={onScroll} ref={scrollRef}>
+      <div style={{ height: 'calc(100vh - 260px)', overflow: 'auto', border:'1px solid rgba(0,0,0,0.06)', borderRadius:12 }} onScroll={onScroll} ref={scrollRef}>
         <Table
           columns={columns}
-          dataSource={rows}
+          dataSource={filteredRows}
           loading={loading}
           pagination={false}
           bordered
-          size="small"
+          size="middle"
+          sticky
           tableLayout="fixed"
-          scroll={{ x: 900 }}
+          scroll={{ x: 1000 }}
+          className="ant-table-striped"
+          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
         />
         <div style={{ textAlign:'center', padding:8, color:'#888' }}>
           {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}

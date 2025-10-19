@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { HomeOutlined, UserOutlined } from '@ant-design/icons'
+import { HomeOutlined, UserOutlined, TeamOutlined, AppstoreOutlined, CalendarOutlined, AimOutlined, FileTextOutlined, TagOutlined } from '@ant-design/icons'
 
 export default function AdminDashboard() {
   const navigate = useNavigate()
@@ -51,7 +51,12 @@ export default function AdminDashboard() {
         </div>
 
         <nav className="menu">
-          <NavLink to="create-user" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>User Management</NavLink>
+          <NavLink to="create-user" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>
+            <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
+              <TeamOutlined />
+              <span>User Management</span>
+            </span>
+          </NavLink>
           <NavLink
             to="gauge-inventory"
             className={({isActive}) => {
@@ -59,12 +64,35 @@ export default function AdminDashboard() {
               return `menu-item${(isActive || onAdminHome) ? ' active' : ''}`
             }}
           >
-            Gauge Inventory
+            <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
+              <AppstoreOutlined />
+              <span>Gauge Inventory</span>
+            </span>
           </NavLink>
-          <NavLink to="calibration-planner" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>Calibration Planner</NavLink>
-          <NavLink to="gauge-tracker" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>Gauge Tracker</NavLink>
-          <NavLink to="report-manager" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>Report Manager</NavLink>
-          <NavLink to="label-manager" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>Label Manager</NavLink>
+          <NavLink to="calibration-planner" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>
+            <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
+              <CalendarOutlined />
+              <span>Calibration Planner</span>
+            </span>
+          </NavLink>
+          <NavLink to="gauge-tracker" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>
+            <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
+              <AimOutlined />
+              <span>Gauge Tracker</span>
+            </span>
+          </NavLink>
+          <NavLink to="report-manager" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>
+            <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
+              <FileTextOutlined />
+              <span>Report Manager</span>
+            </span>
+          </NavLink>
+          <NavLink to="label-manager" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>
+            <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
+              <TagOutlined />
+              <span>Label Manager</span>
+            </span>
+          </NavLink>
         </nav>
       </aside>
 

@@ -57,6 +57,19 @@ class EquipmentPublic(BaseModel):
     calibration_due: date | None = None
 
 
+class EquipmentUpdate(BaseModel):
+    name_of_the_equipment: str | None = None
+    location: str | None = None
+    receipt_date: str | None = None  # ISO date string
+    make_model: str | None = None
+    idfn_no: str | None = None
+    overall_measurement_uncertainty: str | None = None
+    calibration_freq_months: int | None = None
+    date_of_last_calibration: str | None = None  # ISO date string
+    calibration_due: str | None = None  # ISO date string
+    pcr_number: int | None = None
+
+
 class RequestCreate(BaseModel):
     gauge_id: int
     quantity: int = Field(..., ge=1)
@@ -98,4 +111,14 @@ class GaugeTrackPublic(BaseModel):
 
 class GaugeTrackAction(BaseModel):
     accepted_by: str | None = None
+
+
+class ReminderRequest(BaseModel):
+    gauge_id: int
+    admin_name: str
+
+
+class ReminderResponse(BaseModel):
+    success: bool
+    message: str
 

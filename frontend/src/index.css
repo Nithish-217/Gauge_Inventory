@@ -38,7 +38,8 @@ body{
 :root[data-theme="dark"] .sidebar{ background:linear-gradient(180deg,#0b1222 0%, #0a0f1c 100%); border-right:1px solid rgba(255,255,255,0.08) }
 :root[data-theme="dark"] .menu-item:hover{ background: rgba(255,255,255,0.06) }
 :root[data-theme="dark"] .menu-item.active{ background: rgba(37,99,235,0.18); border-color: rgba(147,197,253,0.5) }
-.container{height:100%;display:grid;place-items:center;padding:24px}
+.container{height:100%;display:grid;place-items:center;padding:24px;background-image:url('/lightmode.png');background-size:cover;background-position:center;background-repeat:no-repeat}
+:root[data-theme="dark"] .container{background-image:url('/darkmode.png')}
 .card{width:100%;max-width:400px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));backdrop-filter:saturate(120%) blur(8px);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:28px;box-shadow:0 10px 30px rgba(0,0,0,0.45)}
 .brand{display:flex;align-items:center;gap:12px;margin-bottom:12px}
 .brand-logo{width:36px;height:36px;border-radius:9999px;background:#ffffff;box-shadow:0 6px 16px rgba(37,99,235,0.35);background-image:url('/download.png');background-size:cover;background-position:center;background-repeat:no-repeat;border:1px solid rgba(0,0,0,0.08)}
@@ -136,6 +137,42 @@ h1{font-size:22px;line-height:1.25;margin:0;letter-spacing:.3px}
 .stat-grid{display:grid;grid-template-columns:repeat(3, minmax(0,1fr));gap:16px;margin-top:24px}
 .stat-card{background:var(--card);border:1px solid rgba(0,0,0,0.06);border-radius:16px;box-shadow:0 8px 20px rgba(0,0,0,0.12);padding:16px}
 .stat-title{font-weight:700;margin-bottom:6px}
+
+/* --- Minimal dark-mode table consistency overrides --- */
+:root[data-theme="dark"] .ant-table,
+:root[data-theme="dark"] .ant-table-container {
+  background: var(--card);
+}
+
+:root[data-theme="dark"] .ant-table-thead > tr > th {
+  color: var(--text);
+  border-color: rgba(255,255,255,0.12);
+  background: #0f172a !important; /* dark surface for header cells */
+}
+
+/* Dark mode: make column sorter icons (asc/desc) white */
+:root[data-theme="dark"] .ant-table-column-sorter,
+:root[data-theme="dark"] .ant-table-column-sorters,
+:root[data-theme="dark"] .ant-table-column-sorter-inner,
+:root[data-theme="dark"] .ant-table-column-sorter .anticon,
+:root[data-theme="dark"] .ant-table-column-sorter-up,
+:root[data-theme="dark"] .ant-table-column-sorter-down{
+  color: #e5e7eb !important; /* white-ish */
+}
+:root[data-theme="dark"] .ant-table-column-sorter-up.active,
+:root[data-theme="dark"] .ant-table-column-sorter-down.active{
+  color: #93c5fd !important; /* subtle blue when active */
+}
+
+:root[data-theme="dark"] .ant-table-tbody > tr > td {
+  color: var(--text);
+  border-color: rgba(255,255,255,0.10);
+}
+
+:root[data-theme="dark"] .ant-table,
+:root[data-theme="dark"] .ant-table-wrapper {
+  border-color: rgba(255,255,255,0.10);
+}
 .stat-desc{color:var(--muted);font-size:13px}
 
 /* Light/Dark specifics */
@@ -146,3 +183,155 @@ h1{font-size:22px;line-height:1.25;margin:0;letter-spacing:.3px}
 :root[data-theme="dark"] .topbar{background:linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));border-bottom:1px solid rgba(255,255,255,0.06)}
 :root[data-theme="dark"] .logout-btn{border-color:rgba(255,255,255,0.12)}
 :root[data-theme="dark"] .stat-card{background:#0b1324;border:1px solid rgba(255,255,255,0.08);box-shadow:0 10px 28px rgba(0,0,0,0.55)}
+
+/* Dark mode: search bar (Input.Search) contrast */
+:root[data-theme="dark"] .ant-input-affix-wrapper{
+  background:#0b1324 !important;
+  border-color: rgba(255,255,255,0.16) !important;
+  color: var(--text) !important;
+}
+:root[data-theme="dark"] .ant-input{
+  background:transparent !important;
+  color: var(--text) !important;
+}
+:root[data-theme="dark"] .ant-input::placeholder{ color:#94a3b8 !important }
+
+/* Dark mode: make Ant Form labels (e.g., Username/Password) readable on login */
+:root[data-theme="dark"] .ant-form-item-label > label{
+  color: #e5e7eb !important; /* gray-200 */
+}
+
+/* Dark mode: login helper/subtle text */
+:root[data-theme="dark"] .subtle{ color:#cbd5e1 }
+
+/* Dark mode: table header title contrast (keeps same design) */
+:root[data-theme="dark"] .ant-table-thead > tr > th .ant-table-column-title{
+  color: var(--text);
+}
+
+/* Dark mode: disabled buttons (e.g., Requested) must be readable */
+:root[data-theme="dark"] .ant-btn[disabled]{
+  color: #e5e7eb !important;
+  background: rgba(255,255,255,0.10) !important;
+  border-color: rgba(255,255,255,0.18) !important;
+  opacity: 1 !important;
+}
+:root[data-theme="dark"] .ant-btn-primary[disabled]{
+  color: #e5e7eb !important;
+  background: rgba(59,130,246,0.35) !important; /* subtle blue to indicate state */
+  border-color: rgba(147,197,253,0.45) !important;
+  opacity: 1 !important;
+}
+
+/* Fixed columns (e.g., Actions on right): keep solid background and on-top layering */
+.ant-table-cell-fix-right,
+.ant-table-cell-fix-left{
+  background: var(--card) !important;
+}
+.ant-table-cell.actions-col{
+  position: relative;
+  z-index: 5; /* above neighboring content */
+  background: var(--card) !important;
+}
+
+/* ---------- Dark theme: Calibration Planner and pop elements ---------- */
+/* Calendar surfaces */
+:root[data-theme="dark"] .ant-picker-calendar,
+:root[data-theme="dark"] .ant-picker-panel,
+:root[data-theme="dark"] .ant-picker-content,
+:root[data-theme="dark"] .ant-picker-body {
+  /* Slightly lighter than card for a pleasant contrast */
+  background: #162338 !important;
+  color: var(--text) !important;
+}
+:root[data-theme="dark"] .ant-picker-cell,
+:root[data-theme="dark"] .ant-picker-cell-inner {
+  color: var(--text);
+}
+/* Subtle hover focus on cells in dark mode */
+:root[data-theme="dark"] .ant-picker-cell-inner:hover,
+:root[data-theme="dark"] .ant-picker-cell-selected .ant-picker-cell-inner {
+  background: rgba(255,255,255,0.08) !important;
+}
+/* Calendar header bar */
+:root[data-theme="dark"] .ant-picker-panel .ant-picker-header,
+:root[data-theme="dark"] .ant-picker-calendar .ant-picker-panel .ant-picker-header {
+  background: #0f172a !important;
+  border-color: rgba(255,255,255,0.12) !important;
+  color: var(--text) !important;
+}
+/* Badge legend text (Last/Due/Missed) */
+:root[data-theme="dark"] .ant-badge-status-text { color: var(--text) !important; }
+
+/* Modal/Popover/Select/Tooltip surfaces and text */
+:root[data-theme="dark"] .ant-modal-content,
+:root[data-theme="dark"] .ant-popover-inner,
+:root[data-theme="dark"] .ant-select-dropdown,
+:root[data-theme="dark"] .ant-tooltip-inner {
+  background: var(--card) !important;
+  color: var(--text) !important;
+  border: 1px solid rgba(255,255,255,0.12) !important;
+}
+:root[data-theme="dark"] .ant-modal-header,
+:root[data-theme="dark"] .ant-popover-title {
+  background: #0f172a !important;
+  color: var(--text) !important;
+  border-bottom: 1px solid rgba(255,255,255,0.12) !important;
+}
+/* Force modal titles to pure white for clarity */
+:root[data-theme="dark"] .ant-modal-title{ color:#ffffff !important }
+
+/* List items inside modal */
+:root[data-theme="dark"] .ant-list-item { border-color: rgba(255,255,255,0.08) }
+:root[data-theme="dark"] .ant-list-item-meta-title { color: var(--text) }
+:root[data-theme="dark"] .ant-list-item-meta-description { color: #cbd5e1 }
+
+/* Calendar weekday headers (Sun, Mon, ...) should be white in dark mode */
+:root[data-theme="dark"] .ant-picker-content th{ color:#ffffff !important }
+
+/* Calendar header controls: Year/Month Selects and Segmented in dark mode */
+:root[data-theme="dark"] .ant-picker-calendar .ant-select-selector{
+  background:#0b1324 !important;
+  border-color: rgba(255,255,255,0.18) !important;
+  color: var(--text) !important;
+}
+:root[data-theme="dark"] .ant-picker-calendar .ant-select-selection-item{ color: var(--text) !important }
+:root[data-theme="dark"] .ant-select-dropdown .ant-select-item-option-content{ color: var(--text) }
+:root[data-theme="dark"] .ant-select-dropdown .ant-select-item-option-selected{ background: rgba(255,255,255,0.08) }
+
+:root[data-theme="dark"] .ant-picker-calendar .ant-segmented{ background:#0b1324; border:1px solid rgba(255,255,255,0.12) }
+:root[data-theme="dark"] .ant-picker-calendar .ant-segmented-item-label{ color: var(--text) }
+/* Make segmented active thumb blue in dark mode */
+:root[data-theme="dark"] .ant-picker-calendar .ant-segmented .ant-segmented-thumb{ background:#2563eb !important; border-color:#2563eb !important }
+:root[data-theme="dark"] .ant-picker-calendar .ant-segmented .ant-segmented-item-selected .ant-segmented-item-label{ color:#000000 !important }
+/* Improve label visibility and spacing */
+.ant-picker-calendar .ant-segmented .ant-segmented-item-label{ padding: 2px 10px; font-weight: 600 }
+.ant-picker-calendar .ant-segmented{ line-height: 1.2 }
+/* Selected label text should be black for clarity on blue/white thumb */
+.ant-picker-calendar .ant-segmented .ant-segmented-item-selected .ant-segmented-item-label{ color:#000000 !important }
+
+/* Calendar grid partitions in dark mode */
+:root[data-theme="dark"] .ant-picker-content th,
+:root[data-theme="dark"] .ant-picker-content td{
+  border-color: rgba(255,255,255,0.12) !important;
+}
+
+/* Alternate day cell backgrounds for neat organization */
+:root[data-theme="dark"] .ant-picker-content tbody tr td:nth-child(odd){ background: rgba(255,255,255,0.02) }
+:root[data-theme="dark"] .ant-picker-content tbody tr td:nth-child(even){ background: rgba(255,255,255,0.04) }
+
+/* Out-of-month dates lighter text */
+:root[data-theme="dark"] .ant-picker-cell:not(.ant-picker-cell-in-view) .ant-picker-cell-inner{ color:#94a3b8 }
+
+/* --------- Light mode calendar surface tweaks --------- */
+.ant-picker-calendar .ant-picker-panel,
+.ant-picker-calendar .ant-picker-content,
+.ant-picker-calendar .ant-picker-body{
+  background: #f8fafc; /* slate-50 */
+}
+.ant-picker-calendar .ant-picker-content th,
+.ant-picker-calendar .ant-picker-content td{
+  border-color: rgba(0,0,0,0.08);
+}
+.ant-picker-calendar .ant-picker-content tbody tr td:nth-child(odd){ background: rgba(0,0,0,0.01) }
+.ant-picker-calendar .ant-picker-content tbody tr td:nth-child(even){ background: rgba(0,0,0,0.03) }

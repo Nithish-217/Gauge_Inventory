@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Table, Button, Space, message, Tag } from 'antd'
+import { Table, Button, Space, message, Tag, Popover, Select, DatePicker } from 'antd'
+import { FilterOutlined } from '@ant-design/icons'
+import dayjs from 'dayjs'
 
 export default function GaugeTracker() {
   const [rows, setRows] = useState([])
@@ -7,6 +9,9 @@ export default function GaugeTracker() {
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(true)
   const scrollRef = useRef(null)
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [statusFilter, setStatusFilter] = useState(undefined) // 'requested' | 'accepted' | 'rejected' | 'returned'
+  const [dateFilter, setDateFilter] = useState(null) // dayjs
 
   const limit = 50
   const fetchRows = async (opts = {}) => {
@@ -60,12 +65,10 @@ export default function GaugeTracker() {
 
   const columns = useMemo(() => [
     { title: 'Sl. No.', key: 'slno', width: 70, render:(_, __, index)=> index + 1 },
-    { title: 'Gauge ID', dataIndex: 'gauge_id', key: 'gauge_id', width: 90 },
     { title: 'Equipment', dataIndex: 'name_of_the_equipment', key: 'name_of_the_equipment', width: 220, ellipsis: true },
     { title: 'IDFN', dataIndex: 'idfn_no', key: 'idfn_no', width: 120, ellipsis: true },
     { title: 'Location', dataIndex: 'location', key: 'location', width: 140, ellipsis: true },
     { title: 'Make/Model', dataIndex: 'make_model', key: 'make_model', width: 150, ellipsis: true },
-    { title: 'Qty', dataIndex: 'quantity', key: 'quantity', width: 70 },
     { title: 'Request ID', key: 'request_id', width: 180, render:(_,row)=> {
       try {
         const d = row.requested_at ? new Date(row.requested_at) : null
@@ -91,7 +94,7 @@ export default function GaugeTracker() {
       return <span>Not taken</span>
     }},
     { title: 'Status', dataIndex: 'status', key: 'status', width: 120, render:(v)=> (v||'').toUpperCase() },
-    { title: 'Actions', key: 'actions', width: 200, fixed: 'right', align: 'right', render: (_, row) => {
+    { title: 'Actions', key: 'actions', className: 'actions-col', width: 200, fixed: 'right', align: 'right', render: (_, row) => {
       const s = (row.status||'').toLowerCase()
       const disabled = s === 'accepted' || s === 'rejected' || s === 'returned'
       return (
@@ -102,6 +105,20 @@ export default function GaugeTracker() {
       )
     }},
   ], [])
+
+  const filteredRows = useMemo(() => {
+    return rows.filter(r => {
+      const sOk = statusFilter ? String(r.status||'').toLowerCase() === String(statusFilter).toLowerCase() : true
+      const dOk = dateFilter ? (()=>{
+        try {
+          // Compare against requested_at by default
+          const dt = r.requested_at ? dayjs(r.requested_at) : null
+          return dt ? dt.isSame(dateFilter, 'day') : false
+        } catch { return false }
+      })() : true
+      return sOk && dOk
+    })
+  }, [rows, statusFilter, dateFilter])
 
   const onScroll = (e) => {
     const el = e.currentTarget
@@ -115,19 +132,63 @@ export default function GaugeTracker() {
       <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
         <h2 style={{margin:0}}>Gauge Tracker</h2>
         <Space>
+          <Popover
+            title={null}
+            trigger="click"
+            open={filterOpen}
+            onOpenChange={setFilterOpen}
+            content={(
+              <div style={{display:'grid', gap:8, minWidth:240}}>
+                <div>
+                  <div style={{fontSize:12, color:'#666'}}>Status</div>
+                  <Select
+                    allowClear
+                    placeholder="Select status"
+                    value={statusFilter}
+                    onChange={(v)=>setStatusFilter(v)}
+                    options={[
+                      {label:'Requested', value:'requested'},
+                      {label:'Accepted', value:'accepted'},
+                      {label:'Rejected', value:'rejected'},
+                      {label:'Returned', value:'returned'},
+                    ]}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+                <div>
+                  <div style={{fontSize:12, color:'#666'}}>Date</div>
+                  <DatePicker
+                    allowClear
+                    value={dateFilter}
+                    onChange={(d)=>setDateFilter(d)}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+                <div style={{display:'flex', justifyContent:'flex-end', gap:8}}>
+                  <Button onClick={()=>{ setStatusFilter(undefined); setDateFilter(null) }}>Clear</Button>
+                  <Button type="primary" onClick={()=>setFilterOpen(false)}>Apply</Button>
+                </div>
+              </div>
+            )}
+          >
+            <Button icon={<FilterOutlined />}>Filter</Button>
+          </Popover>
           <Button onClick={() => { setPage(0); setHasMore(true); fetchRows({ page:0, reset:true }) }}>Refresh</Button>
         </Space>
       </div>
       <div style={{ height: 'calc(100vh - 260px)', overflow: 'auto' }} onScroll={onScroll} ref={scrollRef}>
         <Table
           columns={columns}
-          dataSource={rows}
+          dataSource={filteredRows}
           loading={loading}
           pagination={false}
           bordered
-          size="small"
+          size="middle"
+          sticky
           tableLayout="fixed"
           scroll={{ x: 1000 }}
+          className="ant-table-striped"
+          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
         />
         <div style={{ textAlign:'center', padding: 8, color:'#888' }}>
           {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}

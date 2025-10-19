@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Table, Button, Space, Input, DatePicker, InputNumber, Upload, message, Typography, Tag, Modal, Form } from 'antd'
+
 import dayjs from 'dayjs'
 
 export default function ReportManager() {
@@ -10,6 +11,9 @@ export default function ReportManager() {
   const [activeRow, setActiveRow] = useState(null)
   const [form] = Form.useForm()
   const [selectedFile, setSelectedFile] = useState(null)
+  const [page, setPage] = useState(0)
+  const [hasMore, setHasMore] = useState(true)
+  const scrollRef = useRef(null)
 
   // Ensure form fields are prefilled when modal opens
   useEffect(() => {
@@ -50,10 +54,13 @@ export default function ReportManager() {
     }
   }, [modalOpen, activeRow])
 
-  const fetchRows = async () => {
+  const fetchRows = async (opts = {}) => {
     setLoading(true)
     try {
-      const params = new URLSearchParams({ limit: '200', offset: '0' })
+      const cur = typeof opts.page === 'number' ? opts.page : page
+      const limit = 50
+      const offset = cur * limit
+      const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
       if (q?.trim()) params.set('q', q.trim())
       // Try reports endpoint first
       let items = []
@@ -64,7 +71,7 @@ export default function ReportManager() {
           items = Array.isArray(data.items) ? data.items : []
         }
       } catch {}
-      // Fallback to equipment if reports empty
+      // Fallback to equipment if reports empty (keep pagination)
       if (!items.length) {
         const eres = await fetch(`/equipment?${params.toString()}`)
         if (!eres.ok) throw new Error(await eres.text() || 'Failed to load equipment')
@@ -84,7 +91,10 @@ export default function ReportManager() {
           updated_at: null,
         }))
       }
-      setRows(items.map(r => ({ ...r, key: r.gauge_id })))
+      const batch = items.map(r => ({ ...r, key: r.gauge_id }))
+      setHasMore(batch.length === limit)
+      if (cur === 0 || opts.reset) setRows(batch)
+      else setRows(prev => [...prev, ...batch])
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Failed to load')
     } finally {
@@ -92,7 +102,14 @@ export default function ReportManager() {
     }
   }
 
-  useEffect(() => { fetchRows() }, [])
+  useEffect(() => { fetchRows({ page: 0 }) }, [])
+
+  const onScroll = (e) => {
+    const el = e.currentTarget
+    if (!hasMore || loading) return
+    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24
+    if (nearBottom) { const nxt = page + 1; setPage(nxt); fetchRows({ page: nxt }) }
+  }
 
   const onUpload = async (row, state) => {
     try {
@@ -161,22 +178,30 @@ export default function ReportManager() {
             placeholder="Search by name, IDFN, or location"
             value={q}
             onChange={(e)=>setQ(e.target.value)}
-            onSearch={fetchRows}
+            onSearch={()=>{ setPage(0); setHasMore(true); fetchRows({ page:0, reset: true }) }}
             style={{ width: 320 }}
             allowClear
           />
-          <Button onClick={fetchRows}>Refresh</Button>
+          <Button onClick={()=>{ setPage(0); setHasMore(true); fetchRows({ page:0, reset: true }) }}>Refresh</Button>
         </Space>
       </div>
-      <Table
-        columns={columns}
-        dataSource={rows}
-        loading={loading}
-        pagination={false}
-        size="middle"
-        bordered
-        scroll={{ x: 1200 }}
-      />
+      <div style={{ height: 'calc(100vh - 260px)', overflow: 'auto', border:'1px solid rgba(0,0,0,0.06)', borderRadius:12 }} onScroll={onScroll} ref={scrollRef}>
+        <Table
+          columns={columns}
+          dataSource={rows}
+          loading={loading}
+          pagination={false}
+          size="middle"
+          bordered
+          sticky
+          className="ant-table-striped"
+          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+          scroll={{ x: 1200 }}
+        />
+        <div style={{ textAlign: 'center', padding: 8, color: '#888' }}>
+          {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
+        </div>
+      </div>
 
       <Modal
         key={activeRow ? `upload-${activeRow.gauge_id}` : 'upload-none'}

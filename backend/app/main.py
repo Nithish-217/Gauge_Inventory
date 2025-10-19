@@ -18,6 +18,10 @@ from .security import verify_password, get_password_hash
 import os
 from minio import Minio
 from datetime import datetime as dt
+import smtplib
+import ssl
+from email.message import EmailMessage
+from dotenv import load_dotenv
 
 app = FastAPI(title="CMTI Backend", version="0.1.0")
 
@@ -104,7 +108,7 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Free tools held by this user: mark any accepted and not-yet-returned requests as returned
+    # Transaction-safe: restore gauges, then delete user, and commit once
     try:
         # Ensure columns exist for return metadata
         try:
@@ -112,15 +116,19 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
             db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
         except Exception:
             pass
-        # Use username match (requested_by stores usernames)
+
+        # Mark gauges held by this operator as returned (restore to available)
+        # Match either by requested_by (operator username) or accepted_by (edge cases)
         db.execute(text(
             """
             UPDATE public.gauge_requests
             SET status = 'returned', returned_by = :actor, returned_at = NOW()
-            WHERE requested_by = :uname AND status = 'accepted' AND returned_at IS NULL
+            WHERE (requested_by ILIKE :uname OR accepted_by ILIKE :uname)
+              AND status = 'accepted' AND returned_at IS NULL
             """
         ), {"actor": f"system:{user.username}", "uname": user.username})
-        # Also close any legacy gauge_tracker open records issued to this user id
+
+        # Close any open legacy tracker rows issued to this user id
         try:
             db.execute(text(
                 """
@@ -131,13 +139,14 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
             ), {"uid": user.id})
         except Exception:
             pass
-        db.commit()
-    except Exception:
-        db.rollback()
 
-    db.delete(user)
-    db.commit()
-    return None
+        # Finally delete the user
+        db.delete(user)
+        db.commit()
+        return None
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete user safely: {str(e)}")
 
 
 @app.post("/users/{user_id}/password")
@@ -236,6 +245,126 @@ def free_all_tools(db: Session = Depends(get_db)):
     }
 
 
+# =========================
+# Email Reminders
+# =========================
+
+@app.post("/reminders/email", response_model=schemas.ReminderResponse)
+def send_gauge_reminder(payload: schemas.ReminderRequest, db: Session = Depends(get_db)):
+    """Send an email reminder to the operator currently holding the gauge.
+    - Finds the active gauge request (status 'accepted' and not returned) for the gauge_id
+    - Looks up the operator's email from users table using accepted_by username
+    - Composes and sends an email using SMTP credentials from environment variables
+    """
+    gid = int(payload.gauge_id)
+    # Find active holder from primary gauge_requests
+    row = db.execute(text(
+        """
+        SELECT gr.requested_by, gr.accepted_by, e.name_of_the_equipment, e.calibration_due
+        FROM public.gauge_requests gr
+        LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gr.gauge_id
+        WHERE gr.gauge_id = :gid AND gr.status = 'accepted' AND gr.returned_at IS NULL
+        ORDER BY gr.accepted_at DESC NULLS LAST
+        LIMIT 1
+        """
+    ), {"gid": gid}).mappings().first()
+    operator_username = ""
+    if row:
+        # Prefer the requester (operator) as the responsible person, not the admin who accepted
+        operator_username = (row.get("requested_by") or "").strip() or (row.get("accepted_by") or "").strip()
+
+    # If no active holder in gauge_requests, fallback to legacy gauge_tracker current holder
+    user = None
+    if operator_username:
+        user = db.execute(text(
+            """
+            SELECT email, username FROM public.users
+            WHERE TRIM(LOWER(username)) = TRIM(LOWER(:u))
+            LIMIT 1
+            """
+        ), {"u": operator_username}).mappings().first()
+
+    if not user:
+        gt_holder = db.execute(text(
+            """
+            SELECT u.email, u.username, e.name_of_the_equipment, e.calibration_due
+            FROM public.gauge_tracker gt
+            LEFT JOIN public.users u ON u.id = gt.issued_to
+            LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gt.gauge_id
+            WHERE gt.gauge_id = :gid AND gt.returned_at IS NULL
+            ORDER BY gt.issued_at DESC NULLS LAST
+            LIMIT 1
+            """
+        ), {"gid": gid}).mappings().first()
+        if gt_holder and gt_holder.get("email"):
+            user = {"email": gt_holder.get("email"), "username": gt_holder.get("username")}
+            # If no row from requests, use equipment fields from gt join
+            if not row:
+                row = {"name_of_the_equipment": gt_holder.get("name_of_the_equipment"), "calibration_due": gt_holder.get("calibration_due")}
+
+    if not user or not user.get("email"):
+        raise HTTPException(status_code=404, detail="Operator email not found")
+
+    # Reload env from .env (if present) to pick up latest credentials without restart
+    try:
+        load_dotenv(override=False)
+    except Exception:
+        pass
+    # Email config from env
+    smtp_host = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("EMAIL_PORT", "587"))
+    smtp_user = os.getenv("EMAIL_USER")
+    smtp_pass = os.getenv("EMAIL_PASS")
+    email_from = os.getenv("EMAIL_FROM", smtp_user or "")
+    if not smtp_user or not smtp_pass or not email_from:
+        raise HTTPException(status_code=500, detail="Email credentials are not configured")
+
+    operator_email = user["email"]
+    if not operator_username:
+        try:
+            operator_username = (user.get("username") or "").strip()
+        except Exception:
+            operator_username = ""
+    gauge_name = row.get("name_of_the_equipment") or f"Gauge {gid}"
+    due_date = row.get("calibration_due")
+    try:
+        if due_date is not None:
+            try:
+                due_str = due_date.strftime("%Y-%m-%d")
+            except Exception:
+                due_str = str(due_date)
+        else:
+            due_str = "—"
+    except Exception:
+        due_str = str(due_date)
+
+    subject = "Gauge Calibration Reminder"
+    body = (
+        f"Dear {operator_username},\n\n"
+        f"This is a reminder to return the gauge {gauge_name} (ID: {gid}) before its due date: {due_str}.\n\n"
+        f"Regards,\n"
+        f"{payload.admin_name}"
+    )
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = email_from
+    msg["To"] = operator_email
+    msg.set_content(body)
+
+    try:
+        # Use STARTTLS
+        context = ssl.create_default_context()
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+            server.ehlo()
+            server.starttls(context=context)
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+        return {"success": True, "message": "Reminder email sent"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+
+
 @app.get("/equipment")
 def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: Session = Depends(get_db)):
     limit = max(1, min(limit, 200))
@@ -258,9 +387,11 @@ def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: S
           location,
           make_model,
           idfn_no,
+          receipt_date,
           date_of_last_calibration,
           calibration_due,
           calibration_freq_months,
+          overall_measurement_uncertainty,
           pcr_number,
           EXISTS (
             SELECT 1 FROM public.gauge_requests gr
@@ -403,6 +534,121 @@ def create_equipment(payload: schemas.EquipmentCreate, db: Session = Depends(get
         raise HTTPException(status_code=500, detail="Insert failed")
     return row
 
+
+@app.put("/equipment/{gauge_id}", response_model=schemas.EquipmentPublic)
+def update_equipment(gauge_id: int, payload: schemas.EquipmentUpdate, db: Session = Depends(get_db)):
+    # Ensure table exists (be tolerant)
+    db.execute(text(
+        """
+        CREATE TABLE IF NOT EXISTS public.equipment_used_for_calibration (
+          gauge_id SERIAL PRIMARY KEY,
+          name_of_the_equipment TEXT NOT NULL,
+          location TEXT,
+          receipt_date DATE,
+          make_model TEXT,
+          idfn_no TEXT NOT NULL,
+          overall_measurement_uncertainty TEXT,
+          calibration_freq_months INTEGER,
+          date_of_last_calibration DATE,
+          calibration_due DATE,
+          pcr_number BIGINT
+        )
+        """
+    ))
+
+    data = payload.model_dump(exclude_unset=True)
+
+    def to_iso_date(value: str | None) -> str | None:
+        if not value:
+            return None
+        value = value.strip()
+        fmts = ["%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y", "%m-%d-%Y"]
+        for fmt in fmts:
+            try:
+                return datetime.strptime(value, fmt).date().isoformat()
+            except ValueError:
+                continue
+        raise HTTPException(status_code=400, detail=f"Invalid date format: '{value}'. Use YYYY-MM-DD or DD-MM-YYYY.")
+
+    # Normalize fields as strings and cast at SQL layer
+    fields_sql = []
+    params: dict[str, object] = {"gid": gauge_id}
+    if "name_of_the_equipment" in data:
+        fields_sql.append("name_of_the_equipment = :name_of_the_equipment")
+        params["name_of_the_equipment"] = data.get("name_of_the_equipment")
+    if "location" in data:
+        fields_sql.append("location = :location")
+        params["location"] = data.get("location")
+    if "make_model" in data:
+        fields_sql.append("make_model = :make_model")
+        params["make_model"] = data.get("make_model")
+    if "idfn_no" in data:
+        fields_sql.append("idfn_no = :idfn_no")
+        params["idfn_no"] = data.get("idfn_no")
+    if "overall_measurement_uncertainty" in data:
+        fields_sql.append("overall_measurement_uncertainty = :overall_measurement_uncertainty")
+        params["overall_measurement_uncertainty"] = data.get("overall_measurement_uncertainty")
+    if "receipt_date" in data:
+        fields_sql.append("receipt_date = CAST(:receipt_date AS DATE)")
+        params["receipt_date"] = to_iso_date(data.get("receipt_date")) if data.get("receipt_date") else None
+    if "date_of_last_calibration" in data:
+        fields_sql.append("date_of_last_calibration = CAST(:date_of_last_calibration AS DATE)")
+        params["date_of_last_calibration"] = to_iso_date(data.get("date_of_last_calibration")) if data.get("date_of_last_calibration") else None
+    if "calibration_due" in data:
+        fields_sql.append("calibration_due = CAST(:calibration_due AS DATE)")
+        params["calibration_due"] = to_iso_date(data.get("calibration_due")) if data.get("calibration_due") else None
+    if "calibration_freq_months" in data:
+        cfm = data.get("calibration_freq_months")
+        try:
+            cfm_val = None if cfm in (None, "") else int(cfm)
+        except Exception:
+            raise HTTPException(status_code=400, detail="calibration_freq_months must be a number")
+        fields_sql.append("calibration_freq_months = CAST(:calibration_freq_months AS INTEGER)")
+        params["calibration_freq_months"] = cfm_val
+    if "pcr_number" in data:
+        pn = data.get("pcr_number")
+        try:
+            pn_val = None if pn in (None, "") else int(pn)
+        except Exception:
+            raise HTTPException(status_code=400, detail="pcr_number must be a whole number")
+        fields_sql.append("pcr_number = CAST(:pcr_number AS BIGINT)")
+        params["pcr_number"] = pn_val
+
+    if not fields_sql:
+        # Nothing to update; return current row
+        row = db.execute(text(
+            """
+            SELECT gauge_id, name_of_the_equipment, location, make_model, idfn_no,
+                   date_of_last_calibration, calibration_due
+            FROM public.equipment_used_for_calibration
+            WHERE gauge_id = :gid
+            """
+        ), {"gid": gauge_id}).mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Gauge not found")
+        return row
+
+    sql = text(
+        f"""
+        UPDATE public.equipment_used_for_calibration
+        SET {', '.join(fields_sql)}
+        WHERE gauge_id = :gid
+        RETURNING gauge_id, name_of_the_equipment, location, make_model, idfn_no, date_of_last_calibration, calibration_due
+        """
+    )
+    try:
+        row = db.execute(sql, params).mappings().first()
+        if not row:
+            db.rollback()
+            raise HTTPException(status_code=404, detail="Gauge not found")
+        db.commit()
+        return row
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Duplicate or integrity error while updating equipment")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Update error: {str(e)}")
 
 @app.delete("/equipment/{gauge_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_equipment(gauge_id: int, db: Session = Depends(get_db)):
@@ -733,18 +979,18 @@ def qrcode_by_idfn_png(idfn: str, request: Request, db: Session = Depends(get_db
     qr.make(fit=True)
     qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
-    # Compose final label with side texts and bottom IDFN
+    # Compose final label with bottom texts (IDFN, Last, Due)
     from PIL import Image, ImageDraw, ImageFont
     qr_w, qr_h = qr_img.size  # typically box_size * modules
-    # Margins for side texts and bottom caption
-    side_w = int(qr_w * 0.23)  # ~23% of QR width for vertical labels
-    bottom_h = int(qr_h * 0.18)  # ~18% of QR height for IDFN
-    canvas_w = qr_w + side_w * 2
+    # Reserve only bottom area for three rows of text
+    side_w = 0
+    bottom_h = int(qr_h * 0.42)  # larger bottom to fit 3 lines
+    canvas_w = qr_w
     canvas_h = qr_h + bottom_h
     canvas = Image.new("RGB", (canvas_w, canvas_h), color="white")
 
-    # Paste QR centered horizontally within side margins
-    canvas.paste(qr_img, (side_w, 0))
+    # Paste QR at top
+    canvas.paste(qr_img, (0, 0))
 
     # Prepare text strings in dd/mm/YYYY
     def fmt_dmy(d):
@@ -766,16 +1012,16 @@ def qrcode_by_idfn_png(idfn: str, request: Request, db: Session = Depends(get_db
 
     last_txt = f"Last: {fmt_dmy(row.get('date_of_last_calibration'))}" if row.get('date_of_last_calibration') else "Last: —"
     due_txt = f"Due: {fmt_dmy(row.get('calibration_due'))}" if row.get('calibration_due') else "Due: —"
-    idfn_txt = str(row.get('idfn_no') or '')
+    idfn_txt = f"IDFN: {str(row.get('idfn_no') or '')}"
 
     try:
         draw = ImageDraw.Draw(canvas)
         try:
-            font_small = ImageFont.truetype("arial.ttf", size=max(12, qr_w // 22))
-            font_idfn = ImageFont.truetype("arial.ttf", size=max(14, qr_w // 14))
+            font_small = ImageFont.truetype("arial.ttf", size=max(12, qr_w // 24))
+            font_text = ImageFont.truetype("arial.ttf", size=max(13, qr_w // 18))
         except Exception:
             font_small = ImageFont.load_default()
-            font_idfn = ImageFont.load_default()
+            font_text = ImageFont.load_default()
 
         # Helper for text size
         def text_size(drw, text, font):
@@ -785,24 +1031,20 @@ def qrcode_by_idfn_png(idfn: str, request: Request, db: Session = Depends(get_db
             except Exception:
                 return drw.textsize(text, font=font)
 
-        # Left/right vertical text
-        def draw_vertical_text(text, align_left=True):
-            temp = Image.new("RGB", (qr_h, side_w), (255, 255, 255))
-            td = ImageDraw.Draw(temp)
-            tw, th = text_size(td, text, font_small)
-            td.text(((qr_h - tw) // 2, (side_w - th) // 2), text, fill=(0, 0, 0), font=font_small)
-            rotated = temp.rotate(90, expand=True) if align_left else temp.rotate(-90, expand=True)
-            px = 0 if align_left else (side_w + qr_w)
-            canvas.paste(rotated, (px, 0))
+        # Bottom texts stacked under QR: IDFN, Last, Due (center-aligned)
+        line_gap = max(6, qr_w // 32)
+        y = qr_h + max(6, qr_w // 28)
 
-        draw_vertical_text(last_txt, align_left=True)
-        draw_vertical_text(due_txt, align_left=False)
+        def draw_line(t):
+            nonlocal y
+            tw, th = text_size(draw, t, font_text)
+            x = (canvas_w - tw) // 2
+            draw.text((x, y), t, fill=(0, 0, 0), font=font_text)
+            y += th + line_gap
 
-        # Bottom IDFN centered under QR
-        idfn_tw, idfn_th = text_size(draw, idfn_txt, font_idfn)
-        idfn_x = (canvas_w - idfn_tw) // 2
-        idfn_y = qr_h + (bottom_h - idfn_th) // 2
-        draw.text((idfn_x, idfn_y), idfn_txt, fill=(0, 0, 0), font=font_idfn)
+        draw_line(idfn_txt)
+        draw_line(last_txt)
+        draw_line(due_txt)
 
         # Ensure final image is square by padding with white background as needed
         if canvas_w != canvas_h:

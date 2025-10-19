@@ -8,7 +8,6 @@ import Layout from './layouts/Layout.jsx'
 import App from './App.jsx'
 import AdminDashboard from './pages/AdminDashboard.jsx'
 import OperatorDashboard from './pages/OperatorDashboard.jsx'
-import OperatorHome from './pages/operator/Home.jsx'
 import OperatorGaugeInventory from './pages/operator/GaugeInventory.jsx'
 import OperatorGaugeTracker from './pages/operator/GaugeTracker.jsx'
 import ToolRequest from './pages/operator/ToolRequest.jsx'
@@ -39,7 +38,7 @@ root.render(
               <Route path="label-manager" element={<LabelManager />} />
             </Route>
             <Route path="operator" element={<OperatorDashboard />} >
-              <Route index element={<OperatorHome />} />
+              <Route index element={<Navigate to="gauge-inventory" replace />} />
               <Route path="gauge-inventory" element={<OperatorGaugeInventory />} />
               <Route path="gauge-tracker" element={<OperatorGaugeTracker />} />
               <Route path="tool-request" element={<ToolRequest />} />

@@ -111,25 +111,28 @@ export default function LabelManager() {
         </Space>
       </Card>
 
-      <Card>
-        <div
-          ref={scrollRef}
-          onScroll={handleScroll}
-          style={{ maxHeight: 520, overflowY: 'auto', borderRadius: 8 }}
-        >
-          <Table
-            rowKey={(r) => `${r.gauge_id}`}
-            loading={loading}
-            columns={columns}
-            dataSource={items}
-            pagination={false}
-            sticky
-          />
-          <div style={{ textAlign: 'center', padding: 8, color: '#888' }}>
-            {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
-          </div>
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        style={{ height: 'calc(100vh - 260px)', overflow: 'auto', border:'1px solid rgba(0,0,0,0.06)', borderRadius:12 }}
+      >
+        <Table
+          rowKey={(r) => `${r.gauge_id}`}
+          loading={loading}
+          columns={columns}
+          dataSource={items}
+          pagination={false}
+          bordered
+          size="middle"
+          sticky
+          className="ant-table-striped"
+          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+          scroll={{ x: 1000 }}
+        />
+        <div style={{ textAlign: 'center', padding: 8, color: '#888' }}>
+          {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
         </div>
-      </Card>
+      </div>
 
       <Modal
         title={`QR Preview (IDFN ${preview.idfn || ''})`}

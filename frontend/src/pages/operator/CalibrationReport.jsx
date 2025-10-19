@@ -1,16 +1,22 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Table, Button, Space, Tag, message, Input } from 'antd'
 
 export default function CalibrationReport() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(false)
   const [q, setQ] = useState('')
+  const [page, setPage] = useState(0)
+  const [hasMore, setHasMore] = useState(true)
+  const scrollRef = useRef(null)
   const username = (()=>{ try { return localStorage.getItem('username') || '' } catch { return '' } })()
 
-  const fetchRows = async () => {
+  const fetchRows = async (opts = {}) => {
     if (!username) return
     setLoading(true)
     try {
+      const cur = typeof opts.page === 'number' ? opts.page : page
+      const limit = 50
+      const offset = cur * limit
       // Get gauges currently held by this operator (accepted and not returned)
       const tr = await fetch(`/gauge-tracker?requested_by=${encodeURIComponent(username)}`)
       if (!tr.ok) throw new Error(await tr.text() || 'Failed to load tracker')
@@ -23,12 +29,15 @@ export default function CalibrationReport() {
       if (heldIds.size === 0) { setRows([]); return }
 
       // Get reports list and filter to those gauge_ids
-      const res = await fetch(`/reports?limit=500&offset=0${q ? `&q=${encodeURIComponent(q)}` : ''}`)
+      const res = await fetch(`/reports?limit=${limit}&offset=${offset}${q ? `&q=${encodeURIComponent(q)}` : ''}`)
       if (!res.ok) throw new Error(await res.text() || 'Failed to load reports')
       const data = await res.json()
       const items = Array.isArray(data.items) ? data.items : []
       const filtered = items.filter(r => heldIds.has(r.gauge_id))
-      setRows(filtered.map(r => ({ ...r, key: r.gauge_id })))
+      const batch = filtered.map(r => ({ ...r, key: r.gauge_id }))
+      setHasMore(items.length === limit) // pagination based on raw fetch length
+      if (cur === 0 || opts.reset) setRows(batch)
+      else setRows(prev => [...prev, ...batch])
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Failed to load')
     } finally {
@@ -36,7 +45,14 @@ export default function CalibrationReport() {
     }
   }
 
-  useEffect(() => { fetchRows() }, [username])
+  useEffect(() => { fetchRows({ page: 0 }) }, [username])
+
+  const onScroll = (e) => {
+    const el = e.currentTarget
+    if (!hasMore || loading) return
+    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24
+    if (nearBottom) { const nxt = page + 1; setPage(nxt); fetchRows({ page: nxt }) }
+  }
 
   const columns = useMemo(() => [
     { title: 'Sl. No.', dataIndex: 'gauge_id', key: 'gauge_id', width: 90 },
@@ -66,22 +82,30 @@ export default function CalibrationReport() {
             placeholder="Search by name, IDFN, or location"
             value={q}
             onChange={(e)=>setQ(e.target.value)}
-            onSearch={fetchRows}
+            onSearch={()=>{ setPage(0); setHasMore(true); fetchRows({ page:0, reset:true }) }}
             style={{ width: 320 }}
             allowClear
           />
-          <Button onClick={fetchRows}>Refresh</Button>
+          <Button onClick={()=>{ setPage(0); setHasMore(true); fetchRows({ page:0, reset:true }) }}>Refresh</Button>
         </Space>
       </div>
-      <Table
-        columns={columns}
-        dataSource={rows}
-        loading={loading}
-        pagination={false}
-        size="middle"
-        bordered
-        scroll={{ x: 1000 }}
-      />
+      <div style={{ maxHeight: 560, overflow: 'auto', border:'1px solid rgba(0,0,0,0.06)', borderRadius:12 }} onScroll={onScroll} ref={scrollRef}>
+        <Table
+          columns={columns}
+          dataSource={rows}
+          loading={loading}
+          pagination={false}
+          size="middle"
+          bordered
+          sticky
+          className="ant-table-striped"
+          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+          scroll={{ x: 1000 }}
+        />
+        <div style={{ textAlign: 'center', padding: 8, color: '#888' }}>
+          {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
+        </div>
+      </div>
     </div>
   )
 }

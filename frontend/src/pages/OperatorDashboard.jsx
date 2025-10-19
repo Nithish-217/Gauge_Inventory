@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { HomeOutlined, UserOutlined } from '@ant-design/icons'
+import { HomeOutlined, UserOutlined, AppstoreOutlined, AimOutlined, FileTextOutlined } from '@ant-design/icons'
 
 export default function OperatorDashboard() {
   const navigate = useNavigate()
@@ -51,22 +51,31 @@ export default function OperatorDashboard() {
         </div>
 
         <nav className="menu">
-          <NavLink end to="" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>
+          <NavLink to="gauge-inventory" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>
             <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
-              <HomeOutlined />
-              <span>Home</span>
+              <AppstoreOutlined />
+              <span>Gauge Inventory</span>
             </span>
           </NavLink>
-          <NavLink to="gauge-inventory" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>Gauge Inventory</NavLink>
-          <NavLink to="gauge-tracker" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>Gauge Tracker</NavLink>
-          <NavLink to="calibration-report" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>Calibration Report</NavLink>
+          <NavLink to="gauge-tracker" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>
+            <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
+              <AimOutlined />
+              <span>Gauge Tracker</span>
+            </span>
+          </NavLink>
+          <NavLink to="calibration-report" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>
+            <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
+              <FileTextOutlined />
+              <span>Calibration Report</span>
+            </span>
+          </NavLink>
         </nav>
       </aside>
 
       <main className="admin-content">
         <div className="topbar">
           <div style={{display:'flex',alignItems:'center',gap:12}}>
-            <button className="icon-btn" type="button" title="Home" onClick={()=>navigate('/operator')} aria-label="Operator Home">
+            <button className="icon-btn" type="button" title="Inventory" onClick={()=>navigate('/operator/gauge-inventory')} aria-label="Operator Inventory">
               <HomeOutlined />
             </button>
             <div className="topbar-title">CMTI Tool Management System</div>
