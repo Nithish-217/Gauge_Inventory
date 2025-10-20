@@ -1,36 +1,36 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Table, Button, Space, message, Tag, Popover, Select, DatePicker } from 'antd'
-import { FilterOutlined } from '@ant-design/icons'
+import { Table, Button, Space, message, Tag, Popover, Select, DatePicker, Pagination } from 'antd'
+import { FilterOutlined, ReloadOutlined, CheckOutlined, CloseOutlined, UndoOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 
 export default function GaugeTracker() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(false)
-  const [page, setPage] = useState(0)
-  const [hasMore, setHasMore] = useState(true)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalItems, setTotalItems] = useState(0)
+  const [pageSize, setPageSize] = useState(10)
   const scrollRef = useRef(null)
   const [filterOpen, setFilterOpen] = useState(false)
   const [statusFilter, setStatusFilter] = useState(undefined) // 'requested' | 'accepted' | 'rejected' | 'returned'
   const [dateFilter, setDateFilter] = useState(null) // dayjs
 
-  const limit = 50
+  const limit = pageSize
   const fetchRows = async (opts = {}) => {
     setLoading(true)
     try {
-      const cur = typeof opts.page === 'number' ? opts.page : page
+      const cur = typeof opts.page === 'number' ? opts.page : (currentPage - 1)
       const params = new URLSearchParams({ limit: String(limit), offset: String(cur * limit) })
       const res = await fetch(`/gauge-tracker?${params.toString()}`)
       const data = await res.json()
       const batch = Array.isArray(data) ? data.map(r=>({ ...r, key: r.id })) : []
-      setHasMore(batch.length === limit)
-      if (cur === 0 || opts.reset) setRows(batch)
-      else setRows(prev => [...prev, ...batch])
+      setTotalItems(batch.length) // Note: This API doesn't return total count
+      setRows(batch)
     } finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => { fetchRows({ page }) }, [page])
+  useEffect(() => { fetchRows({ page: currentPage - 1 }) }, [currentPage, pageSize])
 
   const onAccept = async (row) => {
     try {
@@ -41,7 +41,7 @@ export default function GaugeTracker() {
       })
       if (!res.ok) throw new Error(await res.text() || 'Failed to accept')
       message.success('Accepted')
-      setPage(0); setHasMore(true); fetchRows({ page:0, reset:true })
+      setCurrentPage(1); fetchRows({ page:0, reset:true })
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Failed to accept')
     }
@@ -57,7 +57,7 @@ export default function GaugeTracker() {
       })
       if (!res.ok) throw new Error(await res.text() || 'Failed to reject')
       message.success('Rejected')
-      setPage(0); setHasMore(true); fetchRows({ page:0, reset:true })
+      setCurrentPage(1); fetchRows({ page:0, reset:true })
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Failed to reject')
     }
@@ -66,7 +66,16 @@ export default function GaugeTracker() {
   const columns = useMemo(() => [
     { title: 'Sl. No.', key: 'slno', width: 70, render:(_, __, index)=> index + 1 },
     { title: 'Equipment', dataIndex: 'name_of_the_equipment', key: 'name_of_the_equipment', width: 220, ellipsis: true },
-    { title: 'IDFN', dataIndex: 'idfn_no', key: 'idfn_no', width: 120, ellipsis: true },
+    { 
+      title: 'IDFN', 
+      dataIndex: 'idfn_no', 
+      key: 'idfn_no', 
+      width: 120, 
+      align: 'center',
+      ellipsis: true,
+      sorter: (a,b) => String(a.idfn_no||'').localeCompare(String(b.idfn_no||'')),
+      render: (text) => text ? <span className="idfn-tag">{text}</span> : ''
+    },
     { title: 'Location', dataIndex: 'location', key: 'location', width: 140, ellipsis: true },
     { title: 'Make/Model', dataIndex: 'make_model', key: 'make_model', width: 150, ellipsis: true },
     { title: 'Request ID', key: 'request_id', width: 180, render:(_,row)=> {
@@ -94,16 +103,38 @@ export default function GaugeTracker() {
       return <span>Not taken</span>
     }},
     { title: 'Status', dataIndex: 'status', key: 'status', width: 120, render:(v)=> (v||'').toUpperCase() },
-    { title: 'Actions', key: 'actions', className: 'actions-col', width: 200, fixed: 'right', align: 'right', render: (_, row) => {
+    { 
+      title: 'Actions', 
+      key: 'actions', 
+      className: 'actions-col', 
+      width: 180, 
+      fixed: 'right', 
+      align: 'center', 
+      render: (_, row) => {
       const s = (row.status||'').toLowerCase()
       const disabled = s === 'accepted' || s === 'rejected' || s === 'returned'
       return (
-        <Space>
-          <Button type="primary" onClick={()=>onAccept(row)} disabled={disabled}>Accept</Button>
-          <Button danger onClick={()=>onReject(row)} disabled={disabled}>Reject</Button>
+          <Space size="small">
+            <Button 
+              type="text" 
+              icon={<CheckOutlined />} 
+              onClick={()=>onAccept(row)} 
+              disabled={disabled}
+              title="Accept"
+              style={{ color: disabled ? '#d9d9d9' : '#52c41a' }}
+            />
+            <Button 
+              type="text" 
+              icon={<CloseOutlined />} 
+              onClick={()=>onReject(row)} 
+              disabled={disabled}
+              title="Reject"
+              style={{ color: disabled ? '#d9d9d9' : '#ff4d4f' }}
+            />
         </Space>
       )
-    }},
+      }
+    },
   ], [])
 
   const filteredRows = useMemo(() => {
@@ -120,99 +151,117 @@ export default function GaugeTracker() {
     })
   }, [rows, statusFilter, dateFilter])
 
-  const onScroll = (e) => {
-    const el = e.currentTarget
-    if (!hasMore || loading) return
-    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24
-    if (nearBottom) setPage(p=>p+1)
+  const handlePageChange = (page, size) => {
+    setCurrentPage(page)
+    if (size !== pageSize) {
+      setPageSize(size)
+    }
   }
 
   return (
-    <div>
-      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
-        <h2 style={{margin:0}}>Gauge Tracker</h2>
-        <Space>
-          <Popover
-            title={null}
-            trigger="click"
-            open={filterOpen}
-            onOpenChange={setFilterOpen}
-            content={(
-              <div style={{display:'grid', gap:8, minWidth:240}}>
-                <div>
-                  <div style={{fontSize:12, color:'#666'}}>Status</div>
-                  <Select
-                    allowClear
-                    placeholder="Select status"
-                    value={statusFilter}
-                    onChange={(v)=>setStatusFilter(v)}
-                    options={[
-                      {label:'Requested', value:'requested'},
-                      {label:'Accepted', value:'accepted'},
-                      {label:'Rejected', value:'rejected'},
-                      {label:'Returned', value:'returned'},
-                    ]}
-                    style={{ width: '100%' }}
-                  />
-                </div>
-                <div>
-                  <div style={{fontSize:12, color:'#666'}}>Date</div>
-                  <DatePicker
-                    allowClear
-                    value={dateFilter}
-                    onChange={(d)=>setDateFilter(d)}
-                    style={{ width: '100%' }}
-                  />
-                </div>
-                <div style={{display:'flex', justifyContent:'flex-end', gap:8}}>
-                  <Button onClick={()=>{ setStatusFilter(undefined); setDateFilter(null) }}>Clear</Button>
-                  <Button type="primary" onClick={()=>setFilterOpen(false)}>Apply</Button>
-                </div>
-              </div>
-            )}
-          >
-            <Button icon={<FilterOutlined />}>Filter</Button>
-          </Popover>
-          <Button onClick={() => { setPage(0); setHasMore(true); fetchRows({ page:0, reset:true }) }}>Refresh</Button>
-        </Space>
+    <div className="equipment-table-container">
+      <div className="table-header">
+        <h2>Gauge Tracker</h2>
       </div>
-      <div style={{ height: 'calc(100vh - 260px)', overflow: 'auto' }} onScroll={onScroll} ref={scrollRef}>
-        <Table
-          columns={columns}
-          dataSource={filteredRows}
-          loading={loading}
-          pagination={false}
-          bordered
-          size="middle"
-          sticky
-          tableLayout="fixed"
-          scroll={{ x: 1000 }}
-          className="ant-table-striped"
-          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
-        />
-        <div style={{ textAlign:'center', padding: 8, color:'#888' }}>
-          {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
+
+      <div className="table-wrapper">
+        <div className="table-controls">
+          <div className="search-section">
+            <Popover
+              title={null}
+              trigger="click"
+              open={filterOpen}
+              onOpenChange={setFilterOpen}
+              content={(
+                <div style={{display:'grid', gap:8, minWidth:240}}>
+                  <div>
+                    <div style={{fontSize:12, color:'#666'}}>Status</div>
+                    <Select
+                      allowClear
+                      placeholder="Select status"
+                      value={statusFilter}
+                      onChange={(v)=>setStatusFilter(v)}
+                      options={[
+                        {label:'Requested', value:'requested'},
+                        {label:'Accepted', value:'accepted'},
+                        {label:'Rejected', value:'rejected'},
+                        {label:'Returned', value:'returned'},
+                      ]}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                  <div>
+                    <div style={{fontSize:12, color:'#666'}}>Date</div>
+                    <DatePicker
+                      allowClear
+                      value={dateFilter}
+                      onChange={(d)=>setDateFilter(d)}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                  <div style={{display:'flex', justifyContent:'flex-end', gap:8}}>
+                    <Button onClick={()=>{ setStatusFilter(undefined); setDateFilter(null) }}>Clear</Button>
+                    <Button type="primary" onClick={()=>setFilterOpen(false)}>Apply</Button>
+                  </div>
+                </div>
+              )}
+            >
+              <Button icon={<FilterOutlined />}>Filter</Button>
+            </Popover>
+          </div>
+          <div className="action-buttons">
+            <Button 
+              icon={<ReloadOutlined />} 
+              onClick={() => { setCurrentPage(1); fetchRows({ page:0, reset:true }) }}
+            >
+              Refresh
+            </Button>
+            <Button
+              danger
+              onClick={async ()=>{
+                try {
+                  const res = await fetch('/admin/free-all-tools', { method: 'POST' })
+                  if (!res.ok) throw new Error(await res.text() || 'Failed to reset')
+                  const data = await res.json().catch(()=>({}))
+                  message.success(`All tools freed${data?.gauge_requests_updated!=null?` (${data.gauge_requests_updated})`:''}`)
+                  fetchRows()
+                } catch (e) {
+                  message.error(typeof e?.message === 'string' ? e.message : 'Failed to reset')
+                }
+              }}
+            >
+              Reset: Free All Tools
+            </Button>
+          </div>
         </div>
-      </div>
-      <div style={{display:'flex', justifyContent:'flex-end', marginTop: 12}}>
-        <Space>
-          <Button
-            danger
-            onClick={async ()=>{
-              try {
-                const res = await fetch('/admin/free-all-tools', { method: 'POST' })
-                if (!res.ok) throw new Error(await res.text() || 'Failed to reset')
-                const data = await res.json().catch(()=>({}))
-                message.success(`All tools freed${data?.gauge_requests_updated!=null?` (${data.gauge_requests_updated})`:''}`)
-                fetchRows()
-              } catch (e) {
-                message.error(typeof e?.message === 'string' ? e.message : 'Failed to reset')
-              }
-            }}
-          >
-            Reset: Free All Tools
-          </Button>
-        </Space>
+
+        <div className="table-container">
+          <Table
+            columns={columns}
+            dataSource={filteredRows}
+            loading={loading}
+            pagination={false}
+            bordered
+            size="middle"
+            className="ant-table-striped professional-table"
+            rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+            scroll={{ x: 1000 }}
+          />
+        </div>
+
+        <div className="pagination-container">
+          <Pagination
+            current={currentPage}
+            total={totalItems}
+            pageSize={pageSize}
+            showSizeChanger
+            showQuickJumper
+            showTotal={(total, range) => `${range[0]}-${range[1]} of ${total} items`}
+            onChange={handlePageChange}
+            onShowSizeChange={handlePageChange}
+            pageSizeOptions={['10', '20', '50', '100']}
+          />
+        </div>
       </div>
     </div>
   )

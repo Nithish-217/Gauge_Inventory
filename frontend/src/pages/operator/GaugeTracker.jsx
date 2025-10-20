@@ -1,33 +1,33 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Table, Button, Space, Tag, message, Popover, Select, DatePicker } from 'antd'
-import { FilterOutlined } from '@ant-design/icons'
+import { Table, Button, Space, Tag, message, Popover, Select, DatePicker, Pagination, Input } from 'antd'
+import { FilterOutlined, ReloadOutlined, CheckOutlined, CloseOutlined, UndoOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 
 export default function OperatorGaugeTracker() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(false)
-  const [page, setPage] = useState(0)
-  const [hasMore, setHasMore] = useState(true)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalItems, setTotalItems] = useState(0)
+  const [pageSize, setPageSize] = useState(10)
   const scrollRef = useRef(null)
   const username = (()=>{ try { return localStorage.getItem('username') || '' } catch { return '' } })()
   const [filterOpen, setFilterOpen] = useState(false)
   const [statusFilter, setStatusFilter] = useState(undefined)
   const [dateFilter, setDateFilter] = useState(null)
 
-  const limit = 50
+  const limit = pageSize
   const fetchRows = async (opts = {}) => {
     if (!username) return
     setLoading(true)
     try {
-      const cur = typeof opts.page === 'number' ? opts.page : page
+      const cur = typeof opts.page === 'number' ? opts.page : (currentPage - 1)
       const params = new URLSearchParams({ requested_by: username, limit: String(limit), offset: String(cur * limit) })
       const res = await fetch(`/gauge-tracker?${params.toString()}`)
       if (!res.ok) throw new Error(await res.text() || 'Failed to load')
       const data = await res.json()
       const batch = Array.isArray(data) ? data.map(r=>({ ...r, key: r.id })) : []
-      setHasMore(batch.length === limit)
-      if (cur === 0 || opts.reset) setRows(batch)
-      else setRows(prev => [...prev, ...batch])
+      setTotalItems(batch.length) // Note: This API doesn't return total count, using current batch length
+      setRows(batch)
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Failed to load')
     } finally {
@@ -35,7 +35,7 @@ export default function OperatorGaugeTracker() {
     }
   }
 
-  useEffect(() => { fetchRows({ page }) }, [username, page])
+  useEffect(() => { fetchRows({ page: currentPage - 1 }) }, [username, currentPage, pageSize])
 
   const onReturn = async (row) => {
     try {
@@ -45,40 +45,99 @@ export default function OperatorGaugeTracker() {
       })
       if (!res.ok) throw new Error(await res.text() || 'Failed to return')
       message.success('Marked as returned')
-      setPage(0); setHasMore(true); fetchRows({ page:0, reset:true })
+      setCurrentPage(1); fetchRows({ page: 0, reset: true })
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Failed to return')
     }
   }
 
   const columns = useMemo(() => [
-    { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
-    { title: 'Equipment', dataIndex: 'name_of_the_equipment', key: 'name_of_the_equipment', width: 220, ellipsis: true },
-    { title: 'IDFN', dataIndex: 'idfn_no', key: 'idfn_no', width: 120, ellipsis: true },
-    { title: 'Status', dataIndex: 'status', key: 'status', width: 120, render:(v)=> (v||'').toUpperCase() },
-    { title: 'Holder', key: 'holder', width: 260, render:(_,row)=> {
-      const s = (row.status||'').toLowerCase()
-      if (s === 'accepted') {
-        return <span>Accepted by <Tag color="blue">{row.accepted_by || '-'}</Tag> on {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
+    { 
+      title: 'ID', 
+      dataIndex: 'id', 
+      key: 'id', 
+      width: 80, 
+      align: 'center',
+      sorter: (a,b) => a.id - b.id
+    },
+    { 
+      title: 'Equipment', 
+      dataIndex: 'name_of_the_equipment', 
+      key: 'name_of_the_equipment', 
+      width: 200, 
+      ellipsis: true,
+      sorter: (a,b) => String(a.name_of_the_equipment||'').localeCompare(String(b.name_of_the_equipment||''))
+    },
+    { 
+      title: 'IDFN', 
+      dataIndex: 'idfn_no', 
+      key: 'idfn_no', 
+      width: 120, 
+      align: 'center',
+      ellipsis: true,
+      sorter: (a,b) => String(a.idfn_no||'').localeCompare(String(b.idfn_no||'')),
+      render: (text) => text ? <span className="idfn-tag">{text}</span> : ''
+    },
+    { 
+      title: 'Status', 
+      dataIndex: 'status', 
+      key: 'status', 
+      width: 120, 
+      align: 'center',
+      render:(v)=> {
+        const status = (v||'').toLowerCase()
+        const color = status === 'accepted' ? 'green' : status === 'rejected' ? 'red' : status === 'returned' ? 'blue' : 'orange'
+        return <Tag color={color}>{(v||'').toUpperCase()}</Tag>
       }
-      if (s === 'rejected') {
-        return <span>Rejected by <Tag color="red">{row.accepted_by || '-'}</Tag> on {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
+    },
+    { 
+      title: 'Holder', 
+      key: 'holder', 
+      width: 280, 
+      render:(_,row)=> {
+        const s = (row.status||'').toLowerCase()
+        if (s === 'accepted') {
+          return <span>Accepted by <Tag color="blue">{row.accepted_by || '-'}</Tag> on {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
+        }
+        if (s === 'rejected') {
+          return <span>Rejected by <Tag color="red">{row.accepted_by || '-'}</Tag> on {row.accepted_at ? new Date(row.accepted_at).toLocaleString() : '-'}</span>
+        }
+        if (s === 'returned') {
+          return <span>Returned on {row.returned_at ? new Date(row.returned_at).toLocaleString() : '-'}</span>
+        }
+        return <span>Pending</span>
       }
-      if (s === 'returned') {
-        return <span>Returned on {row.returned_at ? new Date(row.returned_at).toLocaleString() : '-'}</span>
+    },
+    { 
+      title: 'Actions', 
+      key: 'actions', 
+      width: 120, 
+      fixed: 'right', 
+      align: 'center',
+      render: (_, row) => {
+        const s = (row.status||'').toLowerCase()
+        const canReturn = s === 'accepted' && (row.requested_by || '').toLowerCase() === (username||'').toLowerCase()
+        return (
+          <Space size="small">
+            <Button 
+              type="text" 
+              icon={<ReloadOutlined />} 
+              onClick={fetchRows}
+              title="Refresh"
+              style={{ color: '#1890ff' }}
+            />
+            <Button 
+              type="text" 
+              icon={<UndoOutlined />} 
+              onClick={()=>onReturn(row)} 
+              disabled={!canReturn}
+              title="Return"
+              style={{ color: canReturn ? '#52c41a' : '#d9d9d9' }}
+            />
+          </Space>
+        )
       }
-      return <span>Pending</span>
-    }},
-    { title: 'Actions', key: 'actions', width: 160, fixed: 'right', align: 'right', render: (_, row) => {
-      const s = (row.status||'').toLowerCase()
-      const canReturn = s === 'accepted' && (row.requested_by || '').toLowerCase() === (username||'').toLowerCase()
-      return (
-        <Space>
-          <Button onClick={fetchRows}>Refresh</Button>
-          <Button type="primary" onClick={()=>onReturn(row)} disabled={!canReturn}>Return</Button>
-        </Space>
-      )
-    }},
+    },
   ], [username])
 
   const filteredRows = useMemo(() => {
@@ -94,78 +153,100 @@ export default function OperatorGaugeTracker() {
     })
   }, [rows, statusFilter, dateFilter])
 
-  const onScroll = (e) => {
-    const el = e.currentTarget
-    if (!hasMore || loading) return
-    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24
-    if (nearBottom) setPage(p=>p+1)
+  const handlePageChange = (page, size) => {
+    setCurrentPage(page)
+    if (size !== pageSize) {
+      setPageSize(size)
+    }
   }
 
   return (
-    <div>
-      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
-        <h2 style={{margin:0}}>My Gauge Requests</h2>
-        <Space>
-          <Popover
-            title={null}
-            trigger="click"
-            open={filterOpen}
-            onOpenChange={setFilterOpen}
-            content={(
-              <div style={{display:'grid', gap:8, minWidth:240}}>
-                <div>
-                  <div style={{fontSize:12, color:'#666'}}>Status</div>
-                  <Select
-                    allowClear
-                    placeholder="Select status"
-                    value={statusFilter}
-                    onChange={(v)=>setStatusFilter(v)}
-                    options={[
-                      {label:'Requested', value:'requested'},
-                      {label:'Accepted', value:'accepted'},
-                      {label:'Rejected', value:'rejected'},
-                      {label:'Returned', value:'returned'},
-                    ]}
-                    style={{ width: '100%' }}
-                  />
-                </div>
-                <div>
-                  <div style={{fontSize:12, color:'#666'}}>Date</div>
-                  <DatePicker
-                    allowClear
-                    value={dateFilter}
-                    onChange={(d)=>setDateFilter(d)}
-                    style={{ width: '100%' }}
-                  />
-                </div>
-                <div style={{display:'flex', justifyContent:'flex-end', gap:8}}>
-                  <Button onClick={()=>{ setStatusFilter(undefined); setDateFilter(null) }}>Clear</Button>
-                  <Button type="primary" onClick={()=>setFilterOpen(false)}>Apply</Button>
-                </div>
-              </div>
-            )}
-          >
-            <Button icon={<FilterOutlined />}>Filter</Button>
-          </Popover>
-          <Button onClick={() => { setPage(0); setHasMore(true); fetchRows({ page:0, reset:true }) }}>Refresh</Button>
-        </Space>
+    <div className="equipment-table-container">
+      <div className="table-header">
+        <h2>My Gauge Requests</h2>
       </div>
-      <div style={{ height: 'calc(100vh - 260px)', overflow: 'auto', border:'1px solid rgba(0,0,0,0.06)', borderRadius:12 }} onScroll={onScroll} ref={scrollRef}>
-        <Table
-          columns={columns}
-          dataSource={filteredRows}
-          loading={loading}
-          pagination={false}
-          bordered
-          size="middle"
-          sticky
-          tableLayout="fixed"
-          scroll={{ x: 1000 }}
-          className="ant-table-striped"
-          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
-        />
-        <div style={{ textAlign:'center', padding:8, color:'#888' }}>
-          {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
+
+      <div className="table-wrapper">
+        <div className="table-controls">
+          <div className="search-section">
+            <Popover
+              title={null}
+              trigger="click"
+              open={filterOpen}
+              onOpenChange={setFilterOpen}
+              content={(
+                <div style={{display:'grid', gap:8, minWidth:240}}>
+                  <div>
+                    <div style={{fontSize:12, color:'#666'}}>Status</div>
+                    <Select
+                      allowClear
+                      placeholder="Select status"
+                      value={statusFilter}
+                      onChange={(v)=>setStatusFilter(v)}
+                      options={[
+                        {label:'Requested', value:'requested'},
+                        {label:'Accepted', value:'accepted'},
+                        {label:'Rejected', value:'rejected'},
+                        {label:'Returned', value:'returned'},
+                      ]}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                  <div>
+                    <div style={{fontSize:12, color:'#666'}}>Date</div>
+                    <DatePicker
+                      allowClear
+                      value={dateFilter}
+                      onChange={(d)=>setDateFilter(d)}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                  <div style={{display:'flex', justifyContent:'flex-end', gap:8}}>
+                    <Button onClick={()=>{ setStatusFilter(undefined); setDateFilter(null) }}>Clear</Button>
+                    <Button type="primary" onClick={()=>setFilterOpen(false)}>Apply</Button>
+                  </div>
+                </div>
+              )}
+            >
+              <Button icon={<FilterOutlined />}>Filter</Button>
+            </Popover>
+          </div>
+          <div className="action-buttons">
+            <Button 
+              icon={<ReloadOutlined />} 
+              onClick={() => { setCurrentPage(1); fetchRows({ page:0, reset:true }) }}
+            >
+              Refresh
+            </Button>
+          </div>
+        </div>
+
+        <div className="table-container">
+          <Table
+            columns={columns}
+            dataSource={filteredRows}
+            loading={loading}
+            pagination={false}
+            bordered
+            size="middle"
+            className="ant-table-striped professional-table"
+            rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+            scroll={{ x: 1000 }}
+          />
+        </div>
+
+        <div className="pagination-container">
+          <Pagination
+            current={currentPage}
+            total={totalItems}
+            pageSize={pageSize}
+            showSizeChanger
+            showQuickJumper
+            showTotal={(total, range) => `${range[0]}-${range[1]} of ${total} items`}
+            onChange={handlePageChange}
+            onShowSizeChange={handlePageChange}
+            pageSizeOptions={['10', '20', '50', '100']}
+          />
         </div>
       </div>
     </div>

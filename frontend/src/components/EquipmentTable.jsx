@@ -1,14 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Table, Button, Input, InputNumber, Space, message, Modal } from 'antd'
-import { ReloadOutlined, PlusOutlined } from '@ant-design/icons'
+import { Table, Button, Input, InputNumber, Space, message, Modal, Pagination } from 'antd'
+import { ReloadOutlined, PlusOutlined, EditOutlined, DeleteOutlined, ShoppingCartOutlined } from '@ant-design/icons'
 
 export default function EquipmentTable({ mode = 'admin' }) {
   const [items, setItems] = useState([])
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [page, setPage] = useState(0)
-  const [hasMore, setHasMore] = useState(true)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalItems, setTotalItems] = useState(0)
+  const [pageSize, setPageSize] = useState(10)
   const scrollRef = useRef(null)
   const [adding, setAdding] = useState(false)
   const [addErr, setAddErr] = useState('')
@@ -49,7 +50,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
     calibration_due: '',
     pcr_number: ''
   })
-  const limit = 25
+  const limit = pageSize
 
   // Helper: add months to a YYYY-MM-DD string and return YYYY-MM-DD
   function addMonthsISO(dateStr, months) {
@@ -90,7 +91,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
   const fetchData = async (opts = {}) => {
     setError(''); setLoading(true)
     try {
-      const curPage = typeof opts.page === 'number' ? opts.page : page
+      const curPage = typeof opts.page === 'number' ? opts.page : (currentPage - 1)
       const params = new URLSearchParams({ limit: String(limit), offset: String(curPage * limit) })
       if (q.trim()) params.set('q', q.trim())
       const res = await fetch(`/equipment?${params.toString()}`)
@@ -100,12 +101,8 @@ export default function EquipmentTable({ mode = 'admin' }) {
       }
       const data = await res.json()
       const arr = Array.isArray(data.items) ? data.items : []
-      setHasMore(arr.length === limit)
-      if (curPage === 0 || opts.reset) {
-        setItems(arr.map(r => ({ ...r, key: r.gauge_id })))
-      } else {
-        setItems(prev => [...prev, ...arr.map(r => ({ ...r, key: r.gauge_id }))])
-      }
+      setTotalItems(data.total || 0)
+      setItems(arr.map(r => ({ ...r, key: r.gauge_id })))
     } catch (err) {
       setError(typeof err?.message === 'string' ? err.message : 'Failed to load equipment')
     } finally {
@@ -113,7 +110,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
     }
   }
 
-  useEffect(() => { fetchData({ page }) }, [page])
+  useEffect(() => { fetchData({ page: currentPage - 1 }) }, [currentPage, pageSize])
 
   // Initialize requestedMap for the logged-in operator to block duplicate requests across reloads
   useEffect(() => {
@@ -140,7 +137,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
   }, [requestedBy])
 
   const onSearch = (e) => {
-    e.preventDefault(); setPage(0); setHasMore(true); fetchData({ page: 0, reset: true })
+    e.preventDefault(); setCurrentPage(1); fetchData({ page: 0, reset: true })
   }
 
   const validateField = (name, value) => {
@@ -238,8 +235,8 @@ export default function EquipmentTable({ mode = 'admin' }) {
         name_of_the_equipment: '', location: '', receipt_date: '', make_model: '', idfn_no: '',
         overall_measurement_uncertainty: '', calibration_freq_months: '', date_of_last_calibration: '', calibration_due: '', pcr_number: ''
       })
-      setPage(0)
-      fetchData()
+      setCurrentPage(1)
+      fetchData({ page: 0 })
       setAddSuccess('Tool saved successfully.')
       message.success('Tool added successfully')
       setTimeout(()=>setAddSuccess(''), 2500)
@@ -387,27 +384,108 @@ export default function EquipmentTable({ mode = 'admin' }) {
 
   const columns = useMemo(() => {
     const base = [
-      { title: 'Sl. No.', dataIndex: 'gauge_id', key: 'gauge_id', width: 110, sorter: (a,b)=>a.gauge_id-b.gauge_id },
-      { title: 'Equipment', dataIndex: 'name_of_the_equipment', key: 'name_of_the_equipment', ellipsis: true, sorter: (a,b)=>String(a.name_of_the_equipment||'').localeCompare(String(b.name_of_the_equipment||'')) },
-      { title: 'Location', dataIndex: 'location', key: 'location', ellipsis: true, width: 140, sorter: (a,b)=>String(a.location||'').localeCompare(String(b.location||'')) },
-      { title: 'Make/Model', dataIndex: 'make_model', key: 'make_model', ellipsis: true, width: 160, sorter: (a,b)=>String(a.make_model||'').localeCompare(String(b.make_model||'')) },
-      { title: 'IDFN', dataIndex: 'idfn_no', key: 'idfn_no', width: 140, ellipsis: true, sorter: (a,b)=>String(a.idfn_no||'').localeCompare(String(b.idfn_no||'')) },
-      { title: 'PCR Number', dataIndex: 'pcr_number', key: 'pcr_number', width: 160, sorter:(a,b)=>Number(a.pcr_number||0)-Number(b.pcr_number||0) },
-      { title: 'Last Cal.', dataIndex: 'date_of_last_calibration', key: 'date_of_last_calibration', width: 140, sorter:(a,b)=>new Date(a.date_of_last_calibration||0)-new Date(b.date_of_last_calibration||0), render:(v)=> v ? new Date(v).toLocaleDateString() : '' },
-      { title: 'Due', dataIndex: 'calibration_due', key: 'calibration_due', width: 140, sorter:(a,b)=>new Date(a.calibration_due||0)-new Date(b.calibration_due||0), render:(v)=> v ? new Date(v).toLocaleDateString() : '' },
+      { 
+        title: 'Sl. No.', 
+        dataIndex: 'gauge_id', 
+        key: 'gauge_id', 
+        width: 100, 
+        align: 'center',
+        sorter: (a,b)=>a.gauge_id-b.gauge_id 
+      },
+      { 
+        title: 'Equipment', 
+        dataIndex: 'name_of_the_equipment', 
+        key: 'name_of_the_equipment', 
+        ellipsis: true, 
+        width: 200,
+        sorter: (a,b)=>String(a.name_of_the_equipment||'').localeCompare(String(b.name_of_the_equipment||'')) 
+      },
+      { 
+        title: 'Location', 
+        dataIndex: 'location', 
+        key: 'location', 
+        ellipsis: true, 
+        width: 120, 
+        align: 'center',
+        sorter: (a,b)=>String(a.location||'').localeCompare(String(b.location||'')) 
+      },
+      { 
+        title: 'Make/Model', 
+        dataIndex: 'make_model', 
+        key: 'make_model', 
+        ellipsis: true, 
+        width: 150, 
+        sorter: (a,b)=>String(a.make_model||'').localeCompare(String(b.make_model||'')) 
+      },
+      { 
+        title: 'IDFN', 
+        dataIndex: 'idfn_no', 
+        key: 'idfn_no', 
+        width: 120, 
+        align: 'center',
+        ellipsis: true, 
+        sorter: (a,b)=>String(a.idfn_no||'').localeCompare(String(b.idfn_no||'')),
+        render: (text) => text ? <span className="idfn-tag">{text}</span> : ''
+      },
+      { 
+        title: 'PCR Number', 
+        dataIndex: 'pcr_number', 
+        key: 'pcr_number', 
+        width: 120, 
+        align: 'center',
+        sorter:(a,b)=>Number(a.pcr_number||0)-Number(b.pcr_number||0) 
+      },
+      { 
+        title: 'Last Cal.', 
+        dataIndex: 'date_of_last_calibration', 
+        key: 'date_of_last_calibration', 
+        width: 120, 
+        align: 'center',
+        sorter:(a,b)=>new Date(a.date_of_last_calibration||0)-new Date(b.date_of_last_calibration||0), 
+        render:(v)=> v ? new Date(v).toLocaleDateString() : '' 
+      },
+      { 
+        title: 'Due', 
+        dataIndex: 'calibration_due', 
+        key: 'calibration_due', 
+        width: 120, 
+        align: 'center',
+        sorter:(a,b)=>new Date(a.calibration_due||0)-new Date(b.calibration_due||0), 
+        render:(v)=> v ? new Date(v).toLocaleDateString() : '' 
+      },
     ]
     const actionCol = mode === 'admin'
       ? {
-          title: 'Actions', key: 'actions', fixed: 'right', align: 'right',
+          title: 'Actions', 
+          key: 'actions', 
+          fixed: 'right', 
+          align: 'center',
+          width: 150,
           render: (_, row) => (
-            <Space>
-              <Button onClick={() => openEdit(row)}>Edit</Button>
-              <Button danger onClick={() => onDelete(row.gauge_id)}>Delete</Button>
+            <Space size="small">
+              <Button 
+                type="text" 
+                icon={<EditOutlined />} 
+                onClick={() => openEdit(row)}
+                title="Edit"
+                style={{ color: '#1890ff' }}
+              />
+              <Button 
+                type="text" 
+                danger 
+                icon={<DeleteOutlined />} 
+                onClick={() => onDelete(row.gauge_id)}
+                title="Delete"
+              />
             </Space>
           )
         }
       : {
-          title: 'Request', key: 'request', fixed: 'right', align: 'right',
+          title: 'Request', 
+          key: 'request', 
+          fixed: 'right', 
+          align: 'center',
+          width: 120,
           render: (_, row) => {
             const gid = Number(row.gauge_id)
             const isReq = !!requestedMap[gid]
@@ -415,192 +493,380 @@ export default function EquipmentTable({ mode = 'admin' }) {
             const disabled = !!row.is_unavailable || isReq || isLoading
             const label = row.is_unavailable ? 'Unavailable' : (isReq ? 'Requested' : (isLoading ? 'Requesting...' : 'Request'))
             return (
-              <Space>
-                <Button
-                  type="primary"
-                  onClick={() => onRequest(row)}
-                  disabled={disabled}
-                >{label}</Button>
-              </Space>
+              <Button
+                type="primary"
+                size="small"
+                icon={<ShoppingCartOutlined />}
+                onClick={() => onRequest(row)}
+                disabled={disabled}
+                title={label}
+              >
+                {label}
+              </Button>
             )
           }
         }
     return [...base, actionCol]
   }, [mode, requesting, requestedMap])
 
-  const onScroll = (e) => {
-    const el = e.currentTarget
-    if (loading || !hasMore) return
-    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24
-    if (nearBottom) setPage(p => p + 1)
+  const handlePageChange = (page, size) => {
+    setCurrentPage(page)
+    if (size !== pageSize) {
+      setPageSize(size)
+    }
   }
 
   return (
-    <div>
-      <h2>Equipment Used for Calibration</h2>
+    <div className="equipment-table-container">
+      <div className="table-header">
+        <h2>Equipment Used for Calibration</h2>
+      </div>
 
       {/* Operator view: auto-uses logged-in username; no manual input */}
 
-      <Modal open={mode === 'admin' && adding} title="Add Tool" onCancel={()=>setAdding(false)} footer={null} destroyOnClose>
+      <Modal 
+        open={mode === 'admin' && adding} 
+        title="Add Tool" 
+        onCancel={()=>setAdding(false)} 
+        footer={null} 
+        destroyOnClose
+        className="professional-modal"
+        width={800}
+      >
         <form onSubmit={onAdd}>
-          <div style={{display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:12}}>
-            <div className="field">
-              <label className="label">Equipment Name* (text)</label>
-              {fieldErrors.name_of_the_equipment && <div className="error">{fieldErrors.name_of_the_equipment}</div>}
-              <input className="input" name="name_of_the_equipment" value={form.name_of_the_equipment} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+          <div className="form-grid">
+            <div className="form-field">
+              <label className="form-label required">Equipment Name</label>
+              {fieldErrors.name_of_the_equipment && <div className="form-error">{fieldErrors.name_of_the_equipment}</div>}
+              <input 
+                className={`form-input ${fieldErrors.name_of_the_equipment ? 'error' : ''}`}
+                name="name_of_the_equipment" 
+                value={form.name_of_the_equipment} 
+                onChange={onFormChange}
+                placeholder="Enter equipment name"
+              />
             </div>
-            <div className="field">
-              <label className="label">IDFN* (text)</label>
-              {fieldErrors.idfn_no && <div className="error">{fieldErrors.idfn_no}</div>}
-              <input className="input" name="idfn_no" value={form.idfn_no} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label required">IDFN</label>
+              {fieldErrors.idfn_no && <div className="form-error">{fieldErrors.idfn_no}</div>}
+              <input 
+                className={`form-input ${fieldErrors.idfn_no ? 'error' : ''}`}
+                name="idfn_no" 
+                value={form.idfn_no} 
+                onChange={onFormChange}
+                placeholder="Enter IDFN number"
+              />
             </div>
-            <div className="field">
-              <label className="label">Location (text)</label>
-              {fieldErrors.location && <div className="error">{fieldErrors.location}</div>}
-              <input className="input" name="location" value={form.location} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Location</label>
+              {fieldErrors.location && <div className="form-error">{fieldErrors.location}</div>}
+              <input 
+                className={`form-input ${fieldErrors.location ? 'error' : ''}`}
+                name="location" 
+                value={form.location} 
+                onChange={onFormChange}
+                placeholder="Enter location"
+              />
             </div>
-            <div className="field">
-              <label className="label">Make/Model (text)</label>
-              {fieldErrors.make_model && <div className="error">{fieldErrors.make_model}</div>}
-              <input className="input" name="make_model" value={form.make_model} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Make/Model</label>
+              {fieldErrors.make_model && <div className="form-error">{fieldErrors.make_model}</div>}
+              <input 
+                className={`form-input ${fieldErrors.make_model ? 'error' : ''}`}
+                name="make_model" 
+                value={form.make_model} 
+                onChange={onFormChange}
+                placeholder="Enter make and model"
+              />
             </div>
-            <div className="field">
-              <label className="label">Receipt Date (date YYYY-MM-DD)</label>
-              {fieldErrors.receipt_date && <div className="error">{fieldErrors.receipt_date}</div>}
-              <input className="input" type="date" name="receipt_date" value={form.receipt_date} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Receipt Date</label>
+              {fieldErrors.receipt_date && <div className="form-error">{fieldErrors.receipt_date}</div>}
+              <input 
+                className={`form-input ${fieldErrors.receipt_date ? 'error' : ''}`}
+                type="date" 
+                name="receipt_date" 
+                value={form.receipt_date} 
+                onChange={onFormChange}
+              />
             </div>
-            <div className="field">
-              <label className="label">Overall Measurement Uncertainty (text)</label>
-              {fieldErrors.overall_measurement_uncertainty && <div className="error">{fieldErrors.overall_measurement_uncertainty}</div>}
-              <input className="input" name="overall_measurement_uncertainty" value={form.overall_measurement_uncertainty} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Overall Measurement Uncertainty</label>
+              {fieldErrors.overall_measurement_uncertainty && <div className="form-error">{fieldErrors.overall_measurement_uncertainty}</div>}
+              <input 
+                className={`form-input ${fieldErrors.overall_measurement_uncertainty ? 'error' : ''}`}
+                name="overall_measurement_uncertainty" 
+                value={form.overall_measurement_uncertainty} 
+                onChange={onFormChange}
+                placeholder="Enter measurement uncertainty"
+              />
             </div>
-            <div className="field">
-              <label className="label">Calibration Freq (months) (number)</label>
-              {fieldErrors.calibration_freq_months && <div className="error">{fieldErrors.calibration_freq_months}</div>}
-              <input className="input" type="number" min="0" step="1" name="calibration_freq_months" value={form.calibration_freq_months} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Calibration Frequency (months)</label>
+              {fieldErrors.calibration_freq_months && <div className="form-error">{fieldErrors.calibration_freq_months}</div>}
+              <input 
+                className={`form-input ${fieldErrors.calibration_freq_months ? 'error' : ''}`}
+                type="number" 
+                min="0" 
+                step="1" 
+                name="calibration_freq_months" 
+                value={form.calibration_freq_months} 
+                onChange={onFormChange}
+                placeholder="Enter frequency in months"
+              />
             </div>
-            <div className="field">
-              <label className="label">Last Calibrated on</label>
-              {fieldErrors.date_of_last_calibration && <div className="error">{fieldErrors.date_of_last_calibration}</div>}
-              <input className="input" type="date" name="date_of_last_calibration" value={form.date_of_last_calibration} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Last Calibrated On</label>
+              {fieldErrors.date_of_last_calibration && <div className="form-error">{fieldErrors.date_of_last_calibration}</div>}
+              <input 
+                className={`form-input ${fieldErrors.date_of_last_calibration ? 'error' : ''}`}
+                type="date" 
+                name="date_of_last_calibration" 
+                value={form.date_of_last_calibration} 
+                onChange={onFormChange}
+              />
             </div>
-            <div className="field">
-              <label className="label">Calibration Due (date YYYY-MM-DD)</label>
-              {fieldErrors.calibration_due && <div className="error">{fieldErrors.calibration_due}</div>}
-              <input className="input" type="date" name="calibration_due" value={form.calibration_due} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Calibration Due</label>
+              {fieldErrors.calibration_due && <div className="form-error">{fieldErrors.calibration_due}</div>}
+              <input 
+                className={`form-input ${fieldErrors.calibration_due ? 'error' : ''}`}
+                type="date" 
+                name="calibration_due" 
+                value={form.calibration_due} 
+                onChange={onFormChange}
+              />
             </div>
-            <div className="field">
-              <label className="label">PCR Number (digits only)</label>
-              {fieldErrors.pcr_number && <div className="error">{fieldErrors.pcr_number}</div>}
-              <input className="input" type="number" inputMode="numeric" pattern="[0-9]*" name="pcr_number" value={form.pcr_number} onChange={onFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">PCR Number</label>
+              {fieldErrors.pcr_number && <div className="form-error">{fieldErrors.pcr_number}</div>}
+              <input 
+                className={`form-input ${fieldErrors.pcr_number ? 'error' : ''}`}
+                type="number" 
+                inputMode="numeric" 
+                pattern="[0-9]*" 
+                name="pcr_number" 
+                value={form.pcr_number} 
+                onChange={onFormChange}
+                placeholder="Enter PCR number"
+              />
             </div>
           </div>
-          {addErr && <div className="error" style={{marginTop:8}}>{addErr}</div>}
-          {addSuccess && <div style={{marginTop:8, color:'#22c55e', fontSize:13}}>{addSuccess}</div>}
-          <div className="actions" style={{marginTop:12, display:'flex', justifyContent:'flex-end', gap:8}}>
-            <Button onClick={()=>setAdding(false)}>Cancel</Button>
-            <Button type="primary" htmlType="submit" loading={addLoading}>{addLoading ? 'Saving...' : 'Save Tool'}</Button>
+          {addErr && <div className="form-error" style={{marginTop: 16, fontSize: 14}}>{addErr}</div>}
+          {addSuccess && <div className="form-success" style={{marginTop: 16, fontSize: 14}}>{addSuccess}</div>}
+          <div className="form-actions">
+            <button 
+              type="button" 
+              className="form-button form-button-cancel" 
+              onClick={()=>setAdding(false)}
+            >
+              Cancel
+            </button>
+            <button 
+              type="submit" 
+              className={`form-button form-button-primary ${addLoading ? 'loading' : ''}`}
+              disabled={addLoading}
+            >
+              {addLoading ? 'Saving...' : 'Save Tool'}
+            </button>
           </div>
         </form>
       </Modal>
 
-      <Modal open={mode === 'admin' && editing} title={`Edit Tool [${editRow?.gauge_id ?? ''}]`} onCancel={()=>setEditing(false)} footer={null} destroyOnClose>
+      <Modal 
+        open={mode === 'admin' && editing} 
+        title={`Edit Tool #${editRow?.gauge_id ?? ''}`} 
+        onCancel={()=>setEditing(false)} 
+        footer={null} 
+        destroyOnClose
+        className="professional-modal"
+        width={800}
+      >
         <form onSubmit={onUpdate}>
-          <div style={{display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:12}}>
-            <div className="field">
-              <label className="label">Equipment Name* (text)</label>
-              <input className="input" name="name_of_the_equipment" value={editForm.name_of_the_equipment} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+          <div className="form-grid">
+            <div className="form-field">
+              <label className="form-label required">Equipment Name</label>
+              <input 
+                className="form-input"
+                name="name_of_the_equipment" 
+                value={editForm.name_of_the_equipment} 
+                onChange={onEditFormChange}
+                placeholder="Enter equipment name"
+              />
             </div>
-            <div className="field">
-              <label className="label">IDFN* (text)</label>
-              <input className="input" name="idfn_no" value={editForm.idfn_no} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label required">IDFN</label>
+              <input 
+                className="form-input"
+                name="idfn_no" 
+                value={editForm.idfn_no} 
+                onChange={onEditFormChange}
+                placeholder="Enter IDFN number"
+              />
             </div>
-            <div className="field">
-              <label className="label">Location (text)</label>
-              <input className="input" name="location" value={editForm.location} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Location</label>
+              <input 
+                className="form-input"
+                name="location" 
+                value={editForm.location} 
+                onChange={onEditFormChange}
+                placeholder="Enter location"
+              />
             </div>
-            <div className="field">
-              <label className="label">Make/Model (text)</label>
-              <input className="input" name="make_model" value={editForm.make_model} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Make/Model</label>
+              <input 
+                className="form-input"
+                name="make_model" 
+                value={editForm.make_model} 
+                onChange={onEditFormChange}
+                placeholder="Enter make and model"
+              />
             </div>
-            <div className="field">
-              <label className="label">Receipt Date (date YYYY-MM-DD)</label>
-              <input className="input" type="date" name="receipt_date" value={editForm.receipt_date} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Receipt Date</label>
+              <input 
+                className="form-input"
+                type="date" 
+                name="receipt_date" 
+                value={editForm.receipt_date} 
+                onChange={onEditFormChange}
+              />
             </div>
-            <div className="field">
-              <label className="label">Overall Measurement Uncertainty (text)</label>
-              <input className="input" name="overall_measurement_uncertainty" value={editForm.overall_measurement_uncertainty} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Overall Measurement Uncertainty</label>
+              <input 
+                className="form-input"
+                name="overall_measurement_uncertainty" 
+                value={editForm.overall_measurement_uncertainty} 
+                onChange={onEditFormChange}
+                placeholder="Enter measurement uncertainty"
+              />
             </div>
-            <div className="field">
-              <label className="label">Calibration Freq (months) (number)</label>
-              <input className="input" type="number" min="0" step="1" name="calibration_freq_months" value={editForm.calibration_freq_months} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Calibration Frequency (months)</label>
+              <input 
+                className="form-input"
+                type="number" 
+                min="0" 
+                step="1" 
+                name="calibration_freq_months" 
+                value={editForm.calibration_freq_months} 
+                onChange={onEditFormChange}
+                placeholder="Enter frequency in months"
+              />
             </div>
-            <div className="field">
-              <label className="label">Last Calibrated on</label>
-              <input className="input" type="date" name="date_of_last_calibration" value={editForm.date_of_last_calibration} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Last Calibrated On</label>
+              <input 
+                className="form-input"
+                type="date" 
+                name="date_of_last_calibration" 
+                value={editForm.date_of_last_calibration} 
+                onChange={onEditFormChange}
+              />
             </div>
-            <div className="field">
-              <label className="label">Calibration Due (date YYYY-MM-DD)</label>
-              <input className="input" type="date" name="calibration_due" value={editForm.calibration_due} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">Calibration Due</label>
+              <input 
+                className="form-input"
+                type="date" 
+                name="calibration_due" 
+                value={editForm.calibration_due} 
+                onChange={onEditFormChange}
+              />
             </div>
-            <div className="field">
-              <label className="label">PCR Number (digits only)</label>
-              <input className="input" type="number" inputMode="numeric" pattern="[0-9]*" name="pcr_number" value={editForm.pcr_number} onChange={onEditFormChange} style={{ background: '#ffffff', border:'1px solid #000' }} />
+            <div className="form-field">
+              <label className="form-label">PCR Number</label>
+              <input 
+                className="form-input"
+                type="number" 
+                inputMode="numeric" 
+                pattern="[0-9]*" 
+                name="pcr_number" 
+                value={editForm.pcr_number} 
+                onChange={onEditFormChange}
+                placeholder="Enter PCR number"
+              />
             </div>
           </div>
-          {editErr && <div className="error" style={{marginTop:8}}>{editErr}</div>}
-          <div className="actions" style={{marginTop:12, display:'flex', justifyContent:'flex-end', gap:8}}>
-            <Button onClick={()=>setEditing(false)}>Cancel</Button>
-            <Button type="primary" htmlType="submit" loading={editLoading}>{editLoading ? 'Saving...' : 'Save Changes'}</Button>
+          {editErr && <div className="form-error" style={{marginTop: 16, fontSize: 14}}>{editErr}</div>}
+          <div className="form-actions">
+            <button 
+              type="button" 
+              className="form-button form-button-cancel" 
+              onClick={()=>setEditing(false)}
+            >
+              Cancel
+            </button>
+            <button 
+              type="submit" 
+              className={`form-button form-button-primary ${editLoading ? 'loading' : ''}`}
+              disabled={editLoading}
+            >
+              {editLoading ? 'Saving...' : 'Save Changes'}
+            </button>
           </div>
         </form>
       </Modal>
 
       {error && <div className="error" style={{marginBottom: 8}}>{error}</div>}
 
-      <div style={{overflow: 'auto', height: 'calc(100vh - 260px)', border:"1px solid rgba(0,0,0,0.06)", borderRadius:12}} onScroll={onScroll} ref={scrollRef}>
-        <Table
-          columns={columns}
-          dataSource={items}
-          loading={loading}
-          pagination={false}
-          scroll={{ x: 1000 }}
-          bordered
-          size="middle"
-          sticky
-          className="ant-table-striped"
-          locale={{ emptyText: 'No equipment found' }}
-          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
-          title={() => (
-            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-              <Space>
-                <Input.Search
-                  allowClear
-                  placeholder="Search by name, IDFN or location"
-                  value={q}
-                  onChange={(e)=>setQ(e.target.value)}
-                  onSearch={() => { setPage(0); setHasMore(true); fetchData({ page: 0, reset: true }) }}
-                  enterButton
-                  style={{minWidth:320}}
-                />
-              </Space>
-              <Space>
-                <Button icon={<ReloadOutlined />} onClick={() => { setPage(0); setHasMore(true); fetchData({ page: 0, reset: true }) }}>Refresh</Button>
-                {mode === 'admin' && (
-                  <Button type="primary" icon={<PlusOutlined />} onClick={()=>setAdding(v=>!v)}>
-                    {adding ? 'Close' : 'Add Tool'}
-                  </Button>
-                )}
-              </Space>
-            </div>
-          )}
-        />
-        <div style={{ textAlign: 'center', padding: 8, color: '#888' }}>
-          {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
+      <div className="table-wrapper">
+        <div className="table-controls">
+          <div className="search-section">
+            <Input.Search
+              allowClear
+              placeholder="Search by name, IDFN or location"
+              value={q}
+              onChange={(e)=>setQ(e.target.value)}
+              onSearch={() => { setCurrentPage(1); fetchData({ page: 0, reset: true }) }}
+              enterButton
+              style={{minWidth:320}}
+            />
+          </div>
+          <div className="action-buttons">
+            <Button icon={<ReloadOutlined />} onClick={() => { setCurrentPage(1); fetchData({ page: 0, reset: true }) }}>
+              Refresh
+            </Button>
+            {mode === 'admin' && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={()=>setAdding(v=>!v)}>
+                {adding ? 'Close' : 'Add Tool'}
+              </Button>
+            )}
+          </div>
+        </div>
+
+        <div className="table-container">
+          <Table
+            columns={columns}
+            dataSource={items}
+            loading={loading}
+            pagination={false}
+            scroll={{ x: 1000 }}
+            bordered
+            size="middle"
+            className="ant-table-striped professional-table"
+            locale={{ emptyText: 'No equipment found' }}
+            rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+          />
+        </div>
+
+        <div className="pagination-container">
+          <Pagination
+            current={currentPage}
+            total={totalItems}
+            pageSize={pageSize}
+            showSizeChanger
+            showQuickJumper
+            showTotal={(total, range) => `${range[0]}-${range[1]} of ${total} items`}
+            onChange={handlePageChange}
+            onShowSizeChange={handlePageChange}
+            pageSizeOptions={['10', '20', '50', '100']}
+          />
         </div>
       </div>
-
-      {/* Removed Prev/Next; infinite scroll handles paging */}
     </div>
   )
 }

@@ -1,19 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Card, Button, Space, Typography, Table, Input, message, Modal, Image, Tag } from 'antd'
+import { Card, Button, Space, Typography, Table, Input, message, Modal, Image, Tag, Pagination } from 'antd'
+import { ReloadOutlined, QrcodeOutlined, DownloadOutlined, EyeOutlined } from '@ant-design/icons'
 
 export default function LabelManager() {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
   const [q, setQ] = useState('')
-  const [page, setPage] = useState({ current: 1, pageSize: 50 })
-  const [hasMore, setHasMore] = useState(true)
-  const scrollRef = useRef(null)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalItems, setTotalItems] = useState(0)
+  const [pageSize, setPageSize] = useState(10)
   const [preview, setPreview] = useState({ open: false, idfn: '', imgUrl: '' })
 
   async function fetchEquipment(params = {}) {
     setLoading(true)
-    const current = params.current ?? page.current
-    const limit = params.pageSize ?? page.pageSize
+    const current = params.current ?? currentPage
+    const limit = params.pageSize ?? pageSize
     const offset = (current - 1) * limit
     const qs = new URLSearchParams()
     qs.set('limit', String(limit))
@@ -23,12 +24,8 @@ export default function LabelManager() {
       const res = await fetch(`/equipment?${qs.toString()}`)
       const json = await res.json()
       const batch = json.items ?? []
-      if (current === 1 || params.reset) {
-        setItems(batch)
-      } else {
-        setItems(prev => [...prev, ...batch])
-      }
-      setHasMore(batch.length >= limit)
+      setItems(batch)
+      setTotalItems(json.total || 0)
     } catch (e) {
       message.error('Failed to load equipment')
     } finally {
@@ -37,19 +34,12 @@ export default function LabelManager() {
   }
 
   useEffect(() => {
-    fetchEquipment({ current: 1, pageSize: page.pageSize })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    fetchEquipment({ current: currentPage, pageSize: pageSize })
+  }, [currentPage, pageSize])
 
-  const handleScroll = (e) => {
-    const el = e.currentTarget
-    if (!hasMore || loading) return
-    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24
-    if (nearBottom) {
-      const next = { current: page.current + 1, pageSize: page.pageSize }
-      setPage(next)
-      fetchEquipment(next)
-    }
+  const handlePageChange = (page, size) => {
+    setCurrentPage(page)
+    setPageSize(size)
   }
 
   const openPreview = (record) => {
@@ -75,62 +65,132 @@ export default function LabelManager() {
   }
 
   const columns = [
-    { title: 'Gauge ID', dataIndex: 'gauge_id', key: 'gauge_id', width: 100 },
-    { title: 'Equipment', dataIndex: 'name_of_the_equipment', key: 'name', ellipsis: true },
-    { title: 'IDFN', dataIndex: 'idfn_no', key: 'idfn', width: 160, render: (v)=> v ? <Tag color="blue">{v}</Tag> : <Tag>—</Tag> },
-    { title: 'Last Calibration', dataIndex: 'date_of_last_calibration', key: 'last', width: 160 },
-    { title: 'Calibration Due', dataIndex: 'calibration_due', key: 'due', width: 160 },
+    { 
+      title: 'Gauge ID', 
+      dataIndex: 'gauge_id', 
+      key: 'gauge_id', 
+      width: 100, 
+      align: 'center',
+      sorter: (a,b) => a.gauge_id - b.gauge_id
+    },
+    { 
+      title: 'Equipment', 
+      dataIndex: 'name_of_the_equipment', 
+      key: 'name', 
+      ellipsis: true,
+      width: 200,
+      sorter: (a,b) => String(a.name_of_the_equipment||'').localeCompare(String(b.name_of_the_equipment||''))
+    },
+    { 
+      title: 'IDFN', 
+      dataIndex: 'idfn_no', 
+      key: 'idfn', 
+      width: 160, 
+      align: 'center',
+      render: (v)=> v ? <Tag color="blue" style={{fontWeight: '600'}}>{v}</Tag> : <Tag color="default">—</Tag> 
+    },
+    { 
+      title: 'Last Calibration', 
+      dataIndex: 'date_of_last_calibration', 
+      key: 'last', 
+      width: 160, 
+      align: 'center',
+      render: (v)=> v ? new Date(v).toLocaleDateString() : '—'
+    },
+    { 
+      title: 'Calibration Due', 
+      dataIndex: 'calibration_due', 
+      key: 'due', 
+      width: 160, 
+      align: 'center',
+      render: (v)=> v ? new Date(v).toLocaleDateString() : '—'
+    },
     {
-      title: 'Action', key: 'action', width: 160,
+      title: 'Actions', 
+      key: 'actions', 
+      width: 180,
+      align: 'center',
       render: (_, record) => (
-        <Space>
-          <Button type="primary" onClick={() => openPreview(record)} disabled={!record.idfn_no}>Generate QR</Button>
+        <Space size="small">
+          <Button 
+            type="text" 
+            icon={<EyeOutlined />} 
+            onClick={() => openPreview(record)} 
+            disabled={!record.idfn_no}
+            title="Preview QR Code"
+            style={{ color: '#1890ff' }}
+          />
+          <Button 
+            type="text" 
+            icon={<DownloadOutlined />} 
+            onClick={() => downloadBarcode(record.idfn_no)} 
+            disabled={!record.idfn_no}
+            title="Download QR Code"
+            style={{ color: '#52c41a' }}
+          />
         </Space>
       )
     }
   ]
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Typography.Title level={3} style={{ margin: 0 }}>Label Manager</Typography.Title>
-      <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-        Generate a QR code for each gauge based on IDFN. The QR encodes IDFN, last/due dates, and a direct report download URL.
-      </Typography.Paragraph>
+    <div className="equipment-table-container">
+      <div className="table-header">
+        <h2>Label Manager</h2>
+        <p style={{ margin: '8px 0 0 0', color: 'var(--text-secondary)', fontSize: '14px' }}>
+          Generate QR codes for each gauge based on IDFN. The QR encodes IDFN, last/due dates, and a direct report download URL.
+        </p>
+      </div>
 
-      <Card>
-        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-          <Input.Search
-            placeholder="Search by name, IDFN, or location"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            onSearch={() => { setPage({ current:1, pageSize: page.pageSize }); setHasMore(true); fetchEquipment({ current: 1, pageSize: page.pageSize, reset: true }) }}
-            allowClear
-            style={{ maxWidth: 420 }}
+      <div className="table-wrapper">
+        <div className="table-controls">
+          <div className="search-section">
+            <Input.Search
+              placeholder="Search by name, IDFN, or location"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onSearch={() => { setCurrentPage(1); fetchEquipment({ current: 1, pageSize: pageSize, reset: true }) }}
+              allowClear
+              style={{ width: 320 }}
+            />
+          </div>
+          <div className="action-buttons">
+            <Button 
+              icon={<ReloadOutlined />} 
+              onClick={() => { setCurrentPage(1); fetchEquipment({ current: 1, pageSize: pageSize, reset: true }) }}
+            >
+              Refresh
+            </Button>
+          </div>
+        </div>
+
+        <div className="table-container">
+          <Table
+            rowKey={(r) => `${r.gauge_id}`}
+            loading={loading}
+            columns={columns}
+            dataSource={items}
+            pagination={false}
+            bordered
+            size="middle"
+            className="ant-table-striped professional-table"
+            rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+            scroll={{ x: 1000 }}
           />
-          <Button onClick={() => { setPage({ current:1, pageSize: page.pageSize }); setHasMore(true); fetchEquipment({ current: 1, pageSize: page.pageSize, reset: true }) }}>Refresh</Button>
-        </Space>
-      </Card>
+        </div>
 
-      <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        style={{ height: 'calc(100vh - 260px)', overflow: 'auto', border:'1px solid rgba(0,0,0,0.06)', borderRadius:12 }}
-      >
-        <Table
-          rowKey={(r) => `${r.gauge_id}`}
-          loading={loading}
-          columns={columns}
-          dataSource={items}
-          pagination={false}
-          bordered
-          size="middle"
-          sticky
-          className="ant-table-striped"
-          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
-          scroll={{ x: 1000 }}
-        />
-        <div style={{ textAlign: 'center', padding: 8, color: '#888' }}>
-          {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
+        <div className="pagination-container">
+          <Pagination
+            current={currentPage}
+            total={totalItems}
+            pageSize={pageSize}
+            showSizeChanger
+            showQuickJumper
+            showTotal={(total, range) => `${range[0]}-${range[1]} of ${total} items`}
+            onChange={handlePageChange}
+            onShowSizeChange={handlePageChange}
+            pageSizeOptions={['10', '20', '50', '100']}
+          />
         </div>
       </div>
 
@@ -144,6 +204,8 @@ export default function LabelManager() {
             <Button type="primary" onClick={() => downloadBarcode(preview.idfn)} disabled={!preview.idfn}>Print QR</Button>
           </Space>
         }
+        className="professional-modal"
+        width={400}
       >
         {preview.imgUrl ? (
           <div style={{ display: 'flex', justifyContent: 'center' }}>
@@ -153,6 +215,6 @@ export default function LabelManager() {
           <Typography.Text type="secondary">No preview available.</Typography.Text>
         )}
       </Modal>
-    </Space>
+    </div>
   )
 }

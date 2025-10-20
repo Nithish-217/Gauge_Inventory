@@ -57,7 +57,14 @@ export default function CalibrationReport() {
   const columns = useMemo(() => [
     { title: 'Sl. No.', dataIndex: 'gauge_id', key: 'gauge_id', width: 90 },
     { title: 'Equipment', dataIndex: 'name_of_the_equipment', key: 'name', ellipsis: true },
-    { title: 'IDFN', dataIndex: 'idfn_no', key: 'idfn', width: 140, render:(v)=> v ? <Tag color="blue">{v}</Tag> : <Tag>—</Tag> },
+    { 
+      title: 'IDFN', 
+      dataIndex: 'idfn_no', 
+      key: 'idfn', 
+      width: 140, 
+      align: 'center',
+      render:(v)=> v ? <span className="idfn-tag">{v}</span> : <span className="idfn-tag">—</span> 
+    },
     { title: 'Last Calibration', dataIndex: 'date_of_last_calibration', key: 'last', width: 160, render:(v)=> v ? new Date(v).toLocaleDateString() : '' },
     { title: 'Freq (months)', dataIndex: 'calibration_freq_months', key: 'freq', width: 130 },
     { title: 'Due', dataIndex: 'calibration_due', key: 'due', width: 160, render:(v)=> v ? new Date(v).toLocaleDateString() : '' },
@@ -74,36 +81,49 @@ export default function CalibrationReport() {
   ], [])
 
   return (
-    <div>
-      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
-        <h2 style={{margin:0}}>My Calibration Reports</h2>
-        <Space>
-          <Input.Search
-            placeholder="Search by name, IDFN, or location"
-            value={q}
-            onChange={(e)=>setQ(e.target.value)}
-            onSearch={()=>{ setPage(0); setHasMore(true); fetchRows({ page:0, reset:true }) }}
-            style={{ width: 320 }}
-            allowClear
-          />
-          <Button onClick={()=>{ setPage(0); setHasMore(true); fetchRows({ page:0, reset:true }) }}>Refresh</Button>
-        </Space>
+    <div className="equipment-table-container">
+      <div className="table-header">
+        <h2>My Calibration Reports</h2>
       </div>
-      <div style={{ maxHeight: 560, overflow: 'auto', border:'1px solid rgba(0,0,0,0.06)', borderRadius:12 }} onScroll={onScroll} ref={scrollRef}>
-        <Table
-          columns={columns}
-          dataSource={rows}
-          loading={loading}
-          pagination={false}
-          size="middle"
-          bordered
-          sticky
-          className="ant-table-striped"
-          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
-          scroll={{ x: 1000 }}
-        />
-        <div style={{ textAlign: 'center', padding: 8, color: '#888' }}>
-          {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
+
+      <div className="table-wrapper">
+        <div className="table-controls">
+          <div className="search-section">
+            <Input.Search
+              placeholder="Search by name, IDFN, or location"
+              value={q}
+              onChange={(e)=>setQ(e.target.value)}
+              onSearch={()=>{ setPage(0); setHasMore(true); fetchRows({ page:0, reset:true }) }}
+              style={{ width: 320 }}
+              allowClear
+              enterButton
+            />
+          </div>
+          <div className="action-buttons">
+            <Button onClick={()=>{ setPage(0); setHasMore(true); fetchRows({ page:0, reset:true }) }}>
+              Refresh
+            </Button>
+          </div>
+        </div>
+
+        <div className="table-container">
+          <div style={{ maxHeight: 560, overflow: 'auto' }} onScroll={onScroll} ref={scrollRef}>
+            <Table
+              columns={columns}
+              dataSource={rows}
+              loading={loading}
+              pagination={false}
+              size="middle"
+              bordered
+              sticky
+              className="ant-table-striped professional-table"
+              rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+              scroll={{ x: 1000 }}
+            />
+            <div style={{ textAlign: 'center', padding: 8, color: '#888' }}>
+              {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
+            </div>
+          </div>
         </div>
       </div>
     </div>

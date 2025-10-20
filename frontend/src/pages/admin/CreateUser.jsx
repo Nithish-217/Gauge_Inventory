@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Table, Button, Input, Select, Space, Modal, Form, Input as AntInput, message } from 'antd'
-import { DeleteOutlined, KeyOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Table, Button, Input, Select, Space, Modal, Form, Input as AntInput, message, Pagination } from 'antd'
+import { DeleteOutlined, KeyOutlined, PlusOutlined, ReloadOutlined, EditOutlined, UserOutlined, LockOutlined } from '@ant-design/icons'
 
 export default function CreateUser() {
   const [form, setForm] = useState({ username: '', email: '', password: '', role: 'operator' })
@@ -13,6 +13,9 @@ export default function CreateUser() {
   const [pwdForm] = Form.useForm()
   const [showCreate, setShowCreate] = useState(false)
   const [q, setQ] = useState('')
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalItems, setTotalItems] = useState(0)
+  const [pageSize, setPageSize] = useState(10)
 
   const onChange = (e) => {
     const { name, value } = e.target
@@ -25,7 +28,9 @@ export default function CreateUser() {
       const res = await fetch('/users')
       if (!res.ok) throw new Error(await res.text() || 'Failed to load users')
       const data = await res.json()
-      setUsers((Array.isArray(data) ? data : []).map(u => ({ ...u, key: u.id })))
+      const userList = (Array.isArray(data) ? data : []).map(u => ({ ...u, key: u.id }))
+      setUsers(userList)
+      setTotalItems(userList.length)
     } catch (err) {
       message.error(typeof err?.message === 'string' ? err.message : 'Failed to load users')
     } finally {
@@ -108,17 +113,81 @@ export default function CreateUser() {
   }
 
   const columns = useMemo(() => [
-    { title: 'ID', dataIndex: 'id', key: 'id', width: 70 },
-    { title: 'Username', dataIndex: 'username', key: 'username', ellipsis: true },
-    { title: 'Email', dataIndex: 'email', key: 'email', ellipsis: true },
-    { title: 'Role', dataIndex: 'role', key: 'role', width: 100, render: (r)=> r?.toUpperCase() },
-    { title: 'Created', dataIndex: 'created_at', key: 'created_at', width: 160, render: (v)=> v ? new Date(v).toLocaleString() : '' },
-    { title: 'Actions', key: 'actions', width: 180, align: 'right', render: (_, row) => (
-      <Space>
-        <Button icon={<KeyOutlined />} onClick={()=>openChangePassword(row)}>Change Password</Button>
-        <Button danger icon={<DeleteOutlined />} onClick={()=>onDelete(row.id)}>Delete</Button>
-      </Space>
-    )}
+    { 
+      title: 'ID', 
+      dataIndex: 'id', 
+      key: 'id', 
+      width: 80, 
+      align: 'center',
+      sorter: (a,b) => a.id - b.id
+    },
+    { 
+      title: 'Username', 
+      dataIndex: 'username', 
+      key: 'username', 
+      ellipsis: true,
+      width: 150,
+      sorter: (a,b) => String(a.username||'').localeCompare(String(b.username||''))
+    },
+    { 
+      title: 'Email', 
+      dataIndex: 'email', 
+      key: 'email', 
+      ellipsis: true,
+      width: 200,
+      sorter: (a,b) => String(a.email||'').localeCompare(String(b.email||''))
+    },
+    { 
+      title: 'Role', 
+      dataIndex: 'role', 
+      key: 'role', 
+      width: 120, 
+      align: 'center',
+      render: (r)=> {
+        const role = r?.toUpperCase()
+        const color = role === 'ADMIN' ? 'red' : 'blue'
+        return <span style={{ 
+          padding: '4px 8px', 
+          borderRadius: '4px', 
+          backgroundColor: color === 'red' ? '#ffebee' : '#e3f2fd',
+          color: color === 'red' ? '#c62828' : '#1565c0',
+          fontWeight: '600',
+          fontSize: '12px'
+        }}>{role}</span>
+      }
+    },
+    { 
+      title: 'Created', 
+      dataIndex: 'created_at', 
+      key: 'created_at', 
+      width: 180, 
+      align: 'center',
+      render: (v)=> v ? new Date(v).toLocaleString() : '' 
+    },
+    { 
+      title: 'Actions', 
+      key: 'actions', 
+      width: 160, 
+      align: 'center',
+      render: (_, row) => (
+        <Space size="small">
+          <Button 
+            type="text" 
+            icon={<LockOutlined />} 
+            onClick={()=>openChangePassword(row)}
+            title="Change Password"
+            style={{ color: '#1890ff' }}
+          />
+          <Button 
+            type="text" 
+            danger 
+            icon={<DeleteOutlined />} 
+            onClick={()=>onDelete(row.id)}
+            title="Delete User"
+          />
+        </Space>
+      )
+    }
   ], [])
 
   const filteredUsers = useMemo(() => {
@@ -131,23 +200,40 @@ export default function CreateUser() {
     )
   }, [users, q])
 
+  const paginatedUsers = useMemo(() => {
+    const start = (currentPage - 1) * pageSize
+    const end = start + pageSize
+    return filteredUsers.slice(start, end)
+  }, [filteredUsers, currentPage, pageSize])
+
+  const handlePageChange = (page, size) => {
+    setCurrentPage(page)
+    setPageSize(size)
+  }
+
   return (
-    <div>
-      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
-        <h2 style={{margin:0}}>Users</h2>
-        <Space>
-          <Input.Search
-            allowClear
-            placeholder="Search by username, email, or role"
-            value={q}
-            onChange={(e)=>setQ(e.target.value)}
-            onSearch={()=>{}}
-            style={{minWidth: 320}}
-          />
-          <Button icon={<ReloadOutlined />} onClick={fetchUsers}>Refresh</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={()=>setShowCreate(true)}>Create</Button>
-        </Space>
+    <div className="equipment-table-container">
+      <div className="table-header">
+        <h2>User Management</h2>
       </div>
+
+      <div className="table-wrapper">
+        <div className="table-controls">
+          <div className="search-section">
+            <Input.Search
+              allowClear
+              placeholder="Search by username, email, or role"
+              value={q}
+              onChange={(e)=>setQ(e.target.value)}
+              onSearch={()=>{ setCurrentPage(1) }}
+              style={{width: 320}}
+            />
+          </div>
+          <div className="action-buttons">
+            <Button icon={<ReloadOutlined />} onClick={fetchUsers}>Refresh</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={()=>setShowCreate(true)}>Create User</Button>
+          </div>
+        </div>
 
       <Modal
         title="Create a new user"
@@ -155,40 +241,106 @@ export default function CreateUser() {
         onCancel={()=>setShowCreate(false)}
         footer={null}
         destroyOnClose
+        className="professional-modal"
+        width={600}
       >
         <form onSubmit={onSubmit}>
-          <div style={{display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:12}}>
-            <div className="field"><label className="label" htmlFor="username">Username</label><Input id="username" name="username" value={form.username} onChange={onChange} placeholder="Username" /></div>
-            <div className="field"><label className="label" htmlFor="email">Email</label><Input id="email" name="email" type="email" value={form.email} onChange={onChange} placeholder="Email" /></div>
-            <div className="field"><label className="label" htmlFor="password">Password</label><Input.Password id="password" name="password" value={form.password} onChange={onChange} placeholder="Password" /></div>
-            <div className="field"><label className="label" htmlFor="role">Role</label>
-              <Select id="role" value={form.role} onChange={(v)=>setForm(f=>({...f, role:v}))} options={[{value:'admin', label:'Admin'},{value:'operator', label:'Operator'}]} />
+          <div className="form-grid">
+            <div className="form-field">
+              <label className="form-label required">Username</label>
+              <input
+                className="form-input"
+                id="username"
+                name="username"
+                value={form.username}
+                onChange={onChange}
+                placeholder="Enter username"
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label required">Email</label>
+              <input
+                className="form-input"
+                id="email"
+                name="email"
+                type="email"
+                value={form.email}
+                onChange={onChange}
+                placeholder="Enter email address"
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label required">Password</label>
+              <input
+                className="form-input"
+                id="password"
+                name="password"
+                type="password"
+                value={form.password}
+                onChange={onChange}
+                placeholder="Enter password"
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label required">Role</label>
+              <Select 
+                id="role" 
+                value={form.role} 
+                onChange={(v)=>setForm(f=>({...f, role:v}))} 
+                options={[{value:'admin', label:'Admin'},{value:'operator', label:'Operator'}]}
+                className="form-input"
+                style={{ width: '100%' }}
+              />
             </div>
           </div>
-          <div className="error" role="alert" aria-live="polite">{error}</div>
-          {success && <div style={{color:'#86efac',fontSize:'13px',minHeight:'18px'}}>{success}</div>}
-          <div style={{display:'flex', justifyContent:'flex-end', alignItems:'center', marginTop:12}}>
-            <Space>
-              <Button onClick={()=>setShowCreate(false)}>Cancel</Button>
-              <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={loading}>{loading ? 'Creating...' : 'Submit'}</Button>
-            </Space>
+          {error && <div className="form-error" style={{marginTop: 16, fontSize: 14}}>{error}</div>}
+          {success && <div className="form-success" style={{marginTop: 16, fontSize: 14}}>{success}</div>}
+          <div className="form-actions">
+            <button
+              type="button"
+              className="form-button form-button-cancel"
+              onClick={()=>setShowCreate(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className={`form-button form-button-primary ${loading ? 'loading' : ''}`}
+              disabled={loading}
+            >
+              {loading ? 'Creating...' : 'Create User'}
+            </button>
           </div>
         </form>
       </Modal>
 
-      <div style={{border:'1px solid rgba(0,0,0,0.06)', borderRadius:12, height:'calc(100vh - 260px)', overflow:'auto'}}>
-        <Table
-          columns={columns}
-          dataSource={filteredUsers}
-          loading={usersLoading}
-          pagination={false}
-          bordered
-          size="middle"
-          sticky
-          tableLayout="auto"
-          className="ant-table-striped"
-          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
-        />
+        <div className="table-container">
+          <Table
+            columns={columns}
+            dataSource={paginatedUsers}
+            loading={usersLoading}
+            pagination={false}
+            bordered
+            size="middle"
+            className="ant-table-striped professional-table"
+            rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+            scroll={{ x: 1000 }}
+          />
+        </div>
+
+        <div className="pagination-container">
+          <Pagination
+            current={currentPage}
+            total={filteredUsers.length}
+            pageSize={pageSize}
+            showSizeChanger
+            showQuickJumper
+            showTotal={(total, range) => `${range[0]}-${range[1]} of ${total} users`}
+            onChange={handlePageChange}
+            onShowSizeChange={handlePageChange}
+            pageSizeOptions={['10', '20', '50', '100']}
+          />
+        </div>
       </div>
 
       <Modal
@@ -197,6 +349,8 @@ export default function CreateUser() {
         onCancel={()=>setPwdModal({ open:false, user:null })}
         onOk={submitPasswordChange}
         okText="Update Password"
+        className="professional-modal"
+        width={500}
       >
         <Form layout="vertical" form={pwdForm}>
           <Form.Item label="New Password" name="new_password" rules={[{required:true, message:'Enter a password'},{min:6, message:'At least 6 characters'}]}>

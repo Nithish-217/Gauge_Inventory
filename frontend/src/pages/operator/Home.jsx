@@ -75,8 +75,11 @@ export default function OperatorHome() {
         </Col>
       </Row>
 
-      <div style={{marginTop: 16}}>
-        <Card title="Available Gauges" bordered={true} bodyStyle={{padding: 0}}>
+      <div className="equipment-table-container" style={{marginTop: 16}}>
+        <div className="table-header">
+          <h2>Available Gauges</h2>
+        </div>
+        <div className="table-container">
           <Table
             columns={columns}
             dataSource={availableItems}
@@ -84,8 +87,10 @@ export default function OperatorHome() {
             size="middle"
             bordered
             scroll={{ x: 1000 }}
+            className="ant-table-striped professional-table"
+            rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
           />
-        </Card>
+        </div>
       </div>
     </div>
   )

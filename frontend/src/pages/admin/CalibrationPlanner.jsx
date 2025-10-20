@@ -1,6 +1,6 @@
 import React from 'react'
 import { Calendar, Badge, Button, Space, Spin, Tooltip, Modal, List, Tag, Select, Segmented, message } from 'antd'
-import { LeftOutlined, RightOutlined } from '@ant-design/icons'
+import { LeftOutlined, RightOutlined, ReloadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 
 export default function CalibrationPlanner() {
@@ -153,19 +153,30 @@ export default function CalibrationPlanner() {
   }
 
   return (
-    <div>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center', marginBottom: 12}}>
-        <h2 style={{margin:0}}>Calibration Planner</h2>
-        <Space>
-          <div style={{display:'flex',alignItems:'center',gap:12}}>
-            <Badge status="success" text={<span style={{fontSize:12}}>Last calibration</span>} />
-            <Badge color="#f59e0b" text={<span style={{fontSize:12}}>Calibration due</span>} />
-            <Badge status="error" text={<span style={{fontSize:12}}>Missed (overdue)</span>} />
-          </div>
-          <Button onClick={fetchAll}>Refresh</Button>
-        </Space>
+    <div className="equipment-table-container">
+      <div className="table-header">
+        <h2>Calibration Planner</h2>
+        <div style={{display:'flex',alignItems:'center',gap:16, marginTop: 8}}>
+          <Badge status="success" text={<span style={{fontSize:12}}>Last calibration</span>} />
+          <Badge color="#f59e0b" text={<span style={{fontSize:12}}>Calibration due</span>} />
+          <Badge status="error" text={<span style={{fontSize:12}}>Missed (overdue)</span>} />
+        </div>
       </div>
-      <div style={{border:'1px solid rgba(0,0,0,0.08)', borderRadius: 12, background:'var(--card)'}}>
+
+      <div className="table-wrapper">
+        <div className="table-controls">
+          <div className="search-section">
+            <span style={{color: 'var(--text-secondary)', fontSize: '14px'}}>
+              View calibration schedules and track due dates
+            </span>
+          </div>
+          <div className="action-buttons">
+            <Button icon={<ReloadOutlined />} onClick={fetchAll}>Refresh</Button>
+          </div>
+        </div>
+
+        <div className="table-container">
+          <div style={{border:'1px solid rgba(0,0,0,0.08)', borderRadius: 12, background:'var(--card)'}}>
         <Spin spinning={loading}>
           <Calendar
             value={value}
@@ -217,7 +228,9 @@ export default function CalibrationPlanner() {
               )
             }}
           />
-        </Spin>
+          </Spin>
+          </div>
+        </div>
       </div>
 
       <Modal

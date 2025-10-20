@@ -81,31 +81,37 @@ export default function App() {
   return (
       <div className="container">
         <div className="card">
-          <div className="brand" style={{ justifyContent: 'center' }}>
-            <img src="/download.png" alt="CMTI logo" style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: '9999px' }} />
+          <div className="login-header">
+            <div className="login-title-wrapper">
+              <div className="login-text-content">
+                <h1 className="login-title">Welcome to Gauge Calibration and Management System</h1>
+                <Typography.Paragraph className="login-subtitle">Sign in to continue</Typography.Paragraph>
+              </div>
+            </div>
           </div>
 
-        <div id="root-inner">
+        <div id="root-inner" style={{ textAlign: 'center' }}>
           <Form layout="vertical" onSubmitCapture={handleSubmit} noValidate>
-            <Typography.Paragraph className="subtle">Sign in to continue</Typography.Paragraph>
 
-            <Form.Item label="Username" required>
+            <Form.Item label="Username" required style={{ textAlign: 'left' }}>
               <Input
                 id="username"
                 placeholder="Enter your username"
                 autoComplete="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
+                style={{ textAlign: 'left' }}
               />
             </Form.Item>
 
-            <Form.Item label="Password" required>
+            <Form.Item label="Password" required style={{ textAlign: 'left' }}>
               <Input.Password
                 id="password"
                 placeholder="Enter your password"
                 autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                style={{ textAlign: 'left' }}
               />
             </Form.Item>
 
@@ -116,8 +122,8 @@ export default function App() {
               <Alert type="success" message={message} showIcon style={{ marginBottom: 12 }} />
             )}
 
-            <div className="actions" style={{ display:'flex', gap:12, alignItems:'center', justifyContent:'center' }}>
-              <Button type="primary" htmlType="submit" loading={loading} style={{ minWidth: 120 }}>
+            <div className="actions" style={{ display:'flex', gap:12, alignItems:'center', justifyContent:'center', marginTop: '24px' }}>
+              <Button type="primary" htmlType="submit" loading={loading} style={{ minWidth: 140, height: '44px', fontSize: '16px', fontWeight: '600' }}>
                 {loading ? 'Logging in...' : 'Login'}
               </Button>
             </div>

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Table, Button, Space, Input, DatePicker, InputNumber, Upload, message, Typography, Tag, Modal, Form } from 'antd'
-
+import { Table, Button, Space, Input, DatePicker, InputNumber, Upload, message, Typography, Tag, Modal, Form, Pagination } from 'antd'
+import { ReloadOutlined, UploadOutlined, DownloadOutlined, EyeOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 
 export default function ReportManager() {
@@ -11,8 +11,9 @@ export default function ReportManager() {
   const [activeRow, setActiveRow] = useState(null)
   const [form] = Form.useForm()
   const [selectedFile, setSelectedFile] = useState(null)
-  const [page, setPage] = useState(0)
-  const [hasMore, setHasMore] = useState(true)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalItems, setTotalItems] = useState(0)
+  const [pageSize, setPageSize] = useState(10)
   const scrollRef = useRef(null)
 
   // Ensure form fields are prefilled when modal opens
@@ -57,18 +58,20 @@ export default function ReportManager() {
   const fetchRows = async (opts = {}) => {
     setLoading(true)
     try {
-      const cur = typeof opts.page === 'number' ? opts.page : page
-      const limit = 50
+      const cur = typeof opts.page === 'number' ? opts.page : (currentPage - 1)
+      const limit = pageSize
       const offset = cur * limit
       const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
       if (q?.trim()) params.set('q', q.trim())
       // Try reports endpoint first
       let items = []
+      let total = 0
       try {
         const res = await fetch(`/reports?${params.toString()}`)
         if (res.ok) {
           const data = await res.json()
           items = Array.isArray(data.items) ? data.items : []
+          total = data.total || items.length
         }
       } catch {}
       // Fallback to equipment if reports empty (keep pagination)
@@ -90,11 +93,11 @@ export default function ReportManager() {
           updated_by: null,
           updated_at: null,
         }))
+        total = edata.total || items.length
       }
       const batch = items.map(r => ({ ...r, key: r.gauge_id }))
-      setHasMore(batch.length === limit)
-      if (cur === 0 || opts.reset) setRows(batch)
-      else setRows(prev => [...prev, ...batch])
+      setTotalItems(total)
+      setRows(batch)
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Failed to load')
     } finally {
@@ -102,13 +105,13 @@ export default function ReportManager() {
     }
   }
 
-  useEffect(() => { fetchRows({ page: 0 }) }, [])
+  useEffect(() => { fetchRows({ page: currentPage - 1 }) }, [currentPage, pageSize])
 
-  const onScroll = (e) => {
-    const el = e.currentTarget
-    if (!hasMore || loading) return
-    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24
-    if (nearBottom) { const nxt = page + 1; setPage(nxt); fetchRows({ page: nxt }) }
+  const handlePageChange = (page, size) => {
+    setCurrentPage(page)
+    if (size !== pageSize) {
+      setPageSize(size)
+    }
   }
 
   const onUpload = async (row, state) => {
@@ -135,71 +138,185 @@ export default function ReportManager() {
   }
 
   const columns = useMemo(() => [
-    { title: 'Sl. No.', dataIndex: 'gauge_id', key: 'gauge_id', width: 90 },
-    { title: 'Equipment', dataIndex: 'name_of_the_equipment', key: 'name', ellipsis: true },
-    { title: 'IDFN', dataIndex: 'idfn_no', key: 'idfn', width: 140, render:(v)=> v ? <Tag color="blue">{v}</Tag> : <Tag>—</Tag> },
-    { title: 'Last Calibration', dataIndex: 'date_of_last_calibration', key: 'last', width: 160, render:(v)=> v ? new Date(v).toLocaleDateString() : '' },
-    { title: 'Freq (months)', dataIndex: 'calibration_freq_months', key: 'freq', width: 130 },
-    { title: 'Due', dataIndex: 'calibration_due', key: 'due', width: 160, render:(v)=> v ? new Date(v).toLocaleDateString() : '' },
-    { title: 'Updated By', dataIndex: 'updated_by', key: 'updated_by', width: 140 },
-    { title: 'Updated At', dataIndex: 'updated_at', key: 'updated_at', width: 180, render:(v)=> v ? new Date(v).toLocaleString() : '' },
-    { title: 'Report', dataIndex: 'object_key', key: 'report', width: 220, render:(_,row)=> (
-      <Space>
-        <Button disabled={!row.object_key} onClick={()=> window.open(`/reports/${row.gauge_id}/view`, '_blank')}>View</Button>
-        <Button disabled={!row.object_key} onClick={()=> window.open(`/reports/${row.gauge_id}/download`, '_self')}>Download</Button>
-      </Space>
-    )},
-    { title: 'Upload', key: 'upload', fixed: 'right', align: 'right', width: 140, render:(_,row)=> (
-      <Button type="primary" onClick={() => {
-        setActiveRow(row)
-        setSelectedFile(null)
-        setModalOpen(true)
-        const freqVal = (row.calibration_freq_months !== undefined && row.calibration_freq_months !== null)
-          ? Number(row.calibration_freq_months)
-          : (row.freq !== undefined && row.freq !== null ? Number(row.freq) : undefined)
-        setTimeout(() => {
-          try {
-            form.setFieldsValue({
-              last: row.date_of_last_calibration ? dayjs(row.date_of_last_calibration) : null,
-              freq: isNaN(freqVal) ? undefined : freqVal,
-            })
-          } catch {}
-        }, 0)
-      }}>Upload</Button>
-    )},
+    { 
+      title: 'Sl. No.', 
+      dataIndex: 'gauge_id', 
+      key: 'gauge_id', 
+      width: 100, 
+      align: 'center',
+      sorter: (a,b) => a.gauge_id - b.gauge_id
+    },
+    { 
+      title: 'Equipment', 
+      dataIndex: 'name_of_the_equipment', 
+      key: 'name', 
+      ellipsis: true,
+      width: 200,
+      sorter: (a,b) => String(a.name_of_the_equipment||'').localeCompare(String(b.name_of_the_equipment||''))
+    },
+    { 
+      title: 'IDFN', 
+      dataIndex: 'idfn_no', 
+      key: 'idfn', 
+      width: 140, 
+      align: 'center',
+      render:(v)=> v ? <Tag color="blue">{v}</Tag> : <Tag>—</Tag> 
+    },
+    { 
+      title: 'Last Calibration', 
+      dataIndex: 'date_of_last_calibration', 
+      key: 'last', 
+      width: 160, 
+      align: 'center',
+      render:(v)=> v ? new Date(v).toLocaleDateString() : '' 
+    },
+    { 
+      title: 'Freq (months)', 
+      dataIndex: 'calibration_freq_months', 
+      key: 'freq', 
+      width: 130, 
+      align: 'center',
+      sorter: (a,b) => (a.calibration_freq_months || 0) - (b.calibration_freq_months || 0)
+    },
+    { 
+      title: 'Due', 
+      dataIndex: 'calibration_due', 
+      key: 'due', 
+      width: 160, 
+      align: 'center',
+      render:(v)=> v ? new Date(v).toLocaleDateString() : '' 
+    },
+    { 
+      title: 'Updated By', 
+      dataIndex: 'updated_by', 
+      key: 'updated_by', 
+      width: 140, 
+      ellipsis: true
+    },
+    { 
+      title: 'Updated At', 
+      dataIndex: 'updated_at', 
+      key: 'updated_at', 
+      width: 180, 
+      align: 'center',
+      render:(v)=> v ? new Date(v).toLocaleString() : '' 
+    },
+    { 
+      title: 'Report', 
+      dataIndex: 'object_key', 
+      key: 'report', 
+      width: 180, 
+      align: 'center',
+      render:(_,row)=> (
+        <Space size="small">
+          <Button 
+            type="text" 
+            icon={<EyeOutlined />} 
+            disabled={!row.object_key} 
+            onClick={()=> window.open(`/reports/${row.gauge_id}/view`, '_blank')}
+            title="View Report"
+            style={{ color: '#1890ff' }}
+          />
+          <Button 
+            type="text" 
+            icon={<DownloadOutlined />} 
+            disabled={!row.object_key} 
+            onClick={()=> window.open(`/reports/${row.gauge_id}/download`, '_self')}
+            title="Download Report"
+            style={{ color: '#52c41a' }}
+          />
+        </Space>
+      )
+    },
+    { 
+      title: 'Upload', 
+      key: 'upload', 
+      fixed: 'right', 
+      align: 'center', 
+      width: 120, 
+      render:(_,row)=> (
+        <Button 
+          type="text" 
+          icon={<UploadOutlined />} 
+          onClick={() => {
+            setActiveRow(row)
+            setSelectedFile(null)
+            setModalOpen(true)
+            const freqVal = (row.calibration_freq_months !== undefined && row.calibration_freq_months !== null)
+              ? Number(row.calibration_freq_months)
+              : (row.freq !== undefined && row.freq !== null ? Number(row.freq) : undefined)
+            setTimeout(() => {
+              try {
+                form.setFieldsValue({
+                  last: row.date_of_last_calibration ? dayjs(row.date_of_last_calibration) : null,
+                  freq: isNaN(freqVal) ? undefined : freqVal,
+                })
+              } catch {}
+            }, 0)
+          }}
+          title="Upload Report"
+          style={{ color: '#722ed1' }}
+        >
+          Upload
+        </Button>
+      )
+    },
   ], [])
 
   return (
-    <div>
-      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: 12}}>
-        <Typography.Title level={3} style={{ margin: 0 }}>Report Manager</Typography.Title>
-        <Space>
-          <Input.Search
-            placeholder="Search by name, IDFN, or location"
-            value={q}
-            onChange={(e)=>setQ(e.target.value)}
-            onSearch={()=>{ setPage(0); setHasMore(true); fetchRows({ page:0, reset: true }) }}
-            style={{ width: 320 }}
-            allowClear
-          />
-          <Button onClick={()=>{ setPage(0); setHasMore(true); fetchRows({ page:0, reset: true }) }}>Refresh</Button>
-        </Space>
+    <div className="equipment-table-container">
+      <div className="table-header">
+        <h2>Report Manager</h2>
       </div>
-      <div style={{ height: 'calc(100vh - 260px)', overflow: 'auto', border:'1px solid rgba(0,0,0,0.06)', borderRadius:12 }} onScroll={onScroll} ref={scrollRef}>
-        <Table
-          columns={columns}
-          dataSource={rows}
-          loading={loading}
-          pagination={false}
-          size="middle"
-          bordered
-          sticky
-          className="ant-table-striped"
-          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
-          scroll={{ x: 1200 }}
-        />
-        <div style={{ textAlign: 'center', padding: 8, color: '#888' }}>
-          {loading ? 'Loading…' : (hasMore ? 'Scroll to load more' : 'End of list')}
+
+      <div className="table-wrapper">
+        <div className="table-controls">
+          <div className="search-section">
+            <Input.Search
+              placeholder="Search by name, IDFN, or location"
+              value={q}
+              onChange={(e)=>setQ(e.target.value)}
+              onSearch={()=>{ setCurrentPage(1); fetchRows({ page:0, reset: true }) }}
+              style={{ width: 320 }}
+              allowClear
+            />
+          </div>
+          <div className="action-buttons">
+            <Button 
+              icon={<ReloadOutlined />} 
+              onClick={()=>{ setCurrentPage(1); fetchRows({ page:0, reset: true }) }}
+            >
+              Refresh
+            </Button>
+          </div>
+        </div>
+
+        <div className="table-container">
+          <Table
+            columns={columns}
+            dataSource={rows}
+            loading={loading}
+            pagination={false}
+            size="middle"
+            bordered
+            className="ant-table-striped professional-table"
+            rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+            scroll={{ x: 1200 }}
+          />
+        </div>
+
+        <div className="pagination-container">
+          <Pagination
+            current={currentPage}
+            total={totalItems}
+            pageSize={pageSize}
+            showSizeChanger
+            showQuickJumper
+            showTotal={(total, range) => `${range[0]}-${range[1]} of ${total} items`}
+            onChange={handlePageChange}
+            onShowSizeChange={handlePageChange}
+            pageSizeOptions={['10', '20', '50', '100']}
+          />
         </div>
       </div>
 

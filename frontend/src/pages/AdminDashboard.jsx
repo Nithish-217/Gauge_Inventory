@@ -102,14 +102,18 @@ export default function AdminDashboard() {
             <button className="icon-btn" type="button" title="Home" onClick={()=>navigate('/admin')} aria-label="Admin Home">
               <HomeOutlined />
             </button>
-            <div className="topbar-title">CMTI Tool Management System</div>
+            <div className="topbar-title">CMTI Gauge Management System</div>
           </div>
           <div style={{display:'flex',alignItems:'center',gap:12}}>
-            <div style={{display:'flex',alignItems:'center',gap:6,color:'#555'}}>
-              <UserOutlined />
-              <span style={{fontSize:13}}>
-                {(displayRole || 'admin').toUpperCase()} · {(displayUsername || 'user')}
-              </span>
+            <div className="user-info-section">
+              <div className="user-info-icon">
+                <UserOutlined />
+              </div>
+              <div className="user-info-text">
+                <span className="user-role">{(displayRole || 'admin').toUpperCase()}</span>
+                <span className="user-separator"> · </span>
+                <span className="user-name">{displayUsername || 'user'}</span>
+              </div>
             </div>
             <button className="logout-btn" type="button" onClick={onLogout}>LOGOUT</button>
           </div>

@@ -379,6 +379,13 @@ def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: S
         db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
     except Exception:
         pass
+    
+    # Get total count
+    count_sql = text(f"SELECT COUNT(*) as total FROM public.equipment_used_for_calibration {where}")
+    count_params = {"qs": f"%{q}%"} if q else {}
+    total_count = db.execute(count_sql, count_params).scalar()
+    
+    # Get paginated results
     sql = text(
         f"""
         SELECT 
@@ -411,6 +418,7 @@ def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: S
         "limit": limit,
         "offset": offset,
         "count": len(rows),
+        "total": total_count,
     }
 
 
