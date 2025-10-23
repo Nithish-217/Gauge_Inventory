@@ -107,10 +107,14 @@ class GaugeTrackPublic(BaseModel):
     accepted_at: datetime | None = None
     returned_by: str | None = None
     returned_at: datetime | None = None
+    return_status: str | None = None
+    return_remarks: str | None = None
 
 
 class GaugeTrackAction(BaseModel):
     accepted_by: str | None = None
+    return_status: str | None = None  # Good Condition | Needs maintenance | Damaged
+    return_remarks: str | None = None
 
 
 class ReminderRequest(BaseModel):
@@ -121,4 +125,3 @@ class ReminderRequest(BaseModel):
 class ReminderResponse(BaseModel):
     success: bool
     message: str
-

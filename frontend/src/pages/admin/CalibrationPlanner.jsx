@@ -1,6 +1,6 @@
 import React from 'react'
-import { Calendar, Badge, Button, Space, Spin, Tooltip, Modal, List, Tag, Select, Segmented, message } from 'antd'
-import { LeftOutlined, RightOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Calendar, Badge, Button, Space, Spin, Tooltip, Modal, List, Tag, Select, Segmented, message, Row, Col, Card, Statistic } from 'antd'
+import { LeftOutlined, RightOutlined, ReloadOutlined, CheckCircleOutlined, ClockCircleOutlined, CloseCircleOutlined, CalendarOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 
 export default function CalibrationPlanner() {
@@ -10,6 +10,46 @@ export default function CalibrationPlanner() {
   const [detailModal, setDetailModal] = React.useState({ open: false, date: '', events: [] })
   const [value, setValue] = React.useState(dayjs())
   const [mode, setMode] = React.useState('month') // 'month' | 'year'
+  
+  // Calculate KPIs for the selected month
+  const kpis = React.useMemo(() => {
+    const today = dayjs()
+    const selectedMonth = value.month()
+    const selectedYear = value.year()
+    
+    let total = 0, completed = 0, due = 0, missed = 0
+    
+    items.forEach(item => {
+      // Count items with calibration due in the selected month
+      if (item.calibration_due) {
+        const dueDate = dayjs(item.calibration_due)
+        if (dueDate.month() === selectedMonth && dueDate.year() === selectedYear) {
+          due++
+          if (dueDate.isBefore(today, 'day')) missed++
+        }
+      }
+      
+      // Count items with last calibration in the selected month
+      if (item.date_of_last_calibration) {
+        const lastCalDate = dayjs(item.date_of_last_calibration)
+        if (lastCalDate.month() === selectedMonth && lastCalDate.year() === selectedYear) {
+          completed++
+        }
+      }
+      
+      // Total items that have any calibration activity in the selected month
+      if ((item.date_of_last_calibration && 
+           dayjs(item.date_of_last_calibration).month() === selectedMonth && 
+           dayjs(item.date_of_last_calibration).year() === selectedYear) ||
+          (item.calibration_due && 
+           dayjs(item.calibration_due).month() === selectedMonth && 
+           dayjs(item.calibration_due).year() === selectedYear)) {
+        total++
+      }
+    })
+    
+    return { total, completed, due, missed }
+  }, [items, value])
 
   const limit = 200
 
@@ -174,6 +214,63 @@ export default function CalibrationPlanner() {
             <Button icon={<ReloadOutlined />} onClick={fetchAll}>Refresh</Button>
           </div>
         </div>
+
+        {/* KPI Cards */}
+        <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+          <Col xs={24} sm={12} md={6}>
+            <Card 
+              bodyStyle={{ padding: '16px' }}
+              style={{ background: 'rgba(24, 144, 255, 0.06)', border: '1px solid rgba(24, 144, 255, 0.15)' }}
+            >
+              <Statistic 
+                title="Total Equipment" 
+                value={kpis.total} 
+                prefix={<CalendarOutlined style={{ color: '#1890ff' }} />} 
+                valueStyle={{ color: '#1890ff' }}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} md={6}>
+            <Card 
+              bodyStyle={{ padding: '16px' }}
+              style={{ background: 'rgba(82, 196, 26, 0.06)', border: '1px solid rgba(82, 196, 26, 0.15)' }}
+            >
+              <Statistic 
+                title="Calibrated" 
+                value={kpis.completed}
+                suffix={`/ ${kpis.total}`}
+                prefix={<CheckCircleOutlined style={{ color: '#52c41a' }} />} 
+                valueStyle={{ color: '#52c41a' }}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} md={6}>
+            <Card 
+              bodyStyle={{ padding: '16px' }}
+              style={{ background: 'rgba(250, 173, 20, 0.06)', border: '1px solid rgba(250, 173, 20, 0.15)' }}
+            >
+              <Statistic 
+                title="Due for Calibration" 
+                value={kpis.due}
+                prefix={<ClockCircleOutlined style={{ color: '#faad14' }} />} 
+                valueStyle={{ color: '#fa8c16' }}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} md={6}>
+            <Card 
+              bodyStyle={{ padding: '16px' }}
+              style={{ background: 'rgba(245, 34, 45, 0.06)', border: '1px solid rgba(245, 34, 45, 0.15)' }}
+            >
+              <Statistic 
+                title="Missed Calibration" 
+                value={kpis.missed}
+                prefix={<CloseCircleOutlined style={{ color: '#f5222d' }} />} 
+                valueStyle={{ color: '#f5222d' }}
+              />
+            </Card>
+          </Col>
+        </Row>
 
         <div className="table-container">
           <div style={{border:'1px solid rgba(0,0,0,0.08)', borderRadius: 12, background:'var(--card)'}}>

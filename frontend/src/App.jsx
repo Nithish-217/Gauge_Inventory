@@ -1,8 +1,14 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Form, Input, Button, Typography, Alert } from 'antd'
 
 export default function App() {
+  // Ensure light theme is set on mount
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', 'light')
+    localStorage.setItem('theme', 'light')
+  }, [])
+
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')

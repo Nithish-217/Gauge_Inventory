@@ -22,8 +22,16 @@ import smtplib
 import ssl
 from email.message import EmailMessage
 from dotenv import load_dotenv
+from fastapi.responses import StreamingResponse, RedirectResponse
+from .storage import MinioStorage
 
 app = FastAPI(title="CMTI Backend", version="0.1.0")
+
+# Load environment variables from .env (if present) once at startup.
+try:
+    load_dotenv(override=False)
+except Exception:
+    pass
 
 # CORS: allow local dev from any origin or restrict to your frontend port later
 app.add_middleware(
@@ -379,13 +387,6 @@ def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: S
         db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
     except Exception:
         pass
-    
-    # Get total count
-    count_sql = text(f"SELECT COUNT(*) as total FROM public.equipment_used_for_calibration {where}")
-    count_params = {"qs": f"%{q}%"} if q else {}
-    total_count = db.execute(count_sql, count_params).scalar()
-    
-    # Get paginated results
     sql = text(
         f"""
         SELECT 
@@ -418,7 +419,6 @@ def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: S
         "limit": limit,
         "offset": offset,
         "count": len(rows),
-        "total": total_count,
     }
 
 
@@ -469,6 +469,16 @@ def create_equipment(payload: schemas.EquipmentCreate, db: Session = Depends(get
     # Coerce/clean fields
     for k in ("receipt_date", "date_of_last_calibration", "calibration_due"):
         data[k] = to_iso_date(data.get(k)) if data.get(k) else None
+    # Shift Sunday due date to Monday
+    try:
+        cd = data.get("calibration_due")
+        if cd:
+            d = datetime.strptime(cd, "%Y-%m-%d").date()
+            if d.weekday() == 6:
+                d = d.fromordinal(d.toordinal() + 1)
+                data["calibration_due"] = d.isoformat()
+    except Exception:
+        pass
     # calibration_freq_months should be int or null
     if data.get("calibration_freq_months") in ("", None):
         data["calibration_freq_months"] = None
@@ -604,7 +614,16 @@ def update_equipment(gauge_id: int, payload: schemas.EquipmentUpdate, db: Sessio
         params["date_of_last_calibration"] = to_iso_date(data.get("date_of_last_calibration")) if data.get("date_of_last_calibration") else None
     if "calibration_due" in data:
         fields_sql.append("calibration_due = CAST(:calibration_due AS DATE)")
-        params["calibration_due"] = to_iso_date(data.get("calibration_due")) if data.get("calibration_due") else None
+        cd = to_iso_date(data.get("calibration_due")) if data.get("calibration_due") else None
+        if cd:
+            try:
+                d = datetime.strptime(cd, "%Y-%m-%d").date()
+                if d.weekday() == 6:
+                    d = d.fromordinal(d.toordinal() + 1)
+                    cd = d.isoformat()
+            except Exception:
+                pass
+        params["calibration_due"] = cd
     if "calibration_freq_months" in data:
         cfm = data.get("calibration_freq_months")
         try:
@@ -665,6 +684,42 @@ def delete_equipment(gauge_id: int, db: Session = Depends(get_db)):
     db.commit()
     # Optionally check rowcount
     return None
+
+
+@app.post("/equipment/adjust-due-sundays")
+def adjust_due_sundays(db: Session = Depends(get_db)):
+    """Shift all equipment calibration_due that fall on Sunday to Monday.
+    Returns the number of rows updated.
+    """
+    # Ensure table exists (tolerant)
+    db.execute(text(
+        """
+        CREATE TABLE IF NOT EXISTS public.equipment_used_for_calibration (
+          gauge_id SERIAL PRIMARY KEY,
+          name_of_the_equipment TEXT NOT NULL,
+          location TEXT,
+          receipt_date DATE,
+          make_model TEXT,
+          idfn_no TEXT NOT NULL,
+          overall_measurement_uncertainty TEXT,
+          calibration_freq_months INTEGER,
+          date_of_last_calibration DATE,
+          calibration_due DATE,
+          pcr_number BIGINT
+        )
+        """
+    ))
+    # In Postgres, DOW: 0=Sunday .. 6=Saturday
+    res = db.execute(text(
+        """
+        UPDATE public.equipment_used_for_calibration
+        SET calibration_due = calibration_due + INTERVAL '1 day'
+        WHERE calibration_due IS NOT NULL
+          AND EXTRACT(DOW FROM calibration_due) = 0
+        """
+    ))
+    db.commit()
+    return {"updated": int(getattr(res, 'rowcount', 0) or 0)}
 
 
 @app.post("/requests", response_model=schemas.RequestResponse, status_code=status.HTTP_201_CREATED)
@@ -810,6 +865,8 @@ def list_gauge_tracks(limit: int = 100, offset: int = 0, requested_by: str | Non
     try:
         db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_by VARCHAR(100)"))
         db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS return_status VARCHAR(50)"))
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS return_remarks TEXT"))
     except Exception:
         pass
     where = ""
@@ -833,7 +890,9 @@ def list_gauge_tracks(limit: int = 100, offset: int = 0, requested_by: str | Non
           CASE WHEN gt.issued_to IS NOT NULL AND gt.returned_at IS NULL THEN u.username ELSE gr.accepted_by END AS accepted_by,
           CASE WHEN gt.issued_to IS NOT NULL AND gt.returned_at IS NULL THEN gt.issued_at ELSE gr.accepted_at END AS accepted_at,
           gr.returned_by,
-          gr.returned_at
+          gr.returned_at,
+          gr.return_status,
+          gr.return_remarks
         FROM public.gauge_requests gr
         LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gr.gauge_id
         LEFT JOIN public.gauge_tracker gt ON gt.gauge_id = gr.gauge_id AND gt.returned_at IS NULL
@@ -939,6 +998,7 @@ def accept_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Ses
     # Do not accept if already rejected or accepted
     if (req.get("status") or "").lower() in ("accepted", "rejected", "returned"):
         raise HTTPException(status_code=400, detail="Action not allowed for this status")
+    # Accept the selected request
     db.execute(text(
         """
         UPDATE public.gauge_requests
@@ -946,6 +1006,17 @@ def accept_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Ses
         WHERE id = :id
         """
     ), {"id": track_id, "accepted_by": accepted_by})
+    # Auto-reject all other pending requests for the same tool
+    try:
+        db.execute(text(
+            """
+            UPDATE public.gauge_requests
+            SET status = 'rejected', accepted_by = :accepted_by, accepted_at = NOW()
+            WHERE gauge_id = :gid AND id <> :id AND status = 'requested'
+            """
+        ), {"gid": req["gauge_id"], "id": track_id, "accepted_by": accepted_by})
+    except Exception:
+        pass
     db.commit()
     return list_gauge_tracks(limit=1, offset=0, db=db)[0]
 
@@ -1094,7 +1165,20 @@ def get_minio_client():
 
 
 def get_minio_bucket():
-    return os.getenv("MINIO_BUCKET", "gagecalibration")
+    # Default to 'reports' bucket unless overridden
+    return os.getenv("MINIO_BUCKET", "reports")
+
+
+def _build_minio_url(key: str) -> str:
+    """Construct a public URL to the object in MinIO using path-style.
+    If MINIO_PUBLIC_ENDPOINT is set, prefer it; else use MINIO_ENDPOINT.
+    Scheme is decided from MINIO_SECURE.
+    """
+    endpoint = os.getenv("MINIO_PUBLIC_ENDPOINT") or os.getenv("MINIO_ENDPOINT", "127.0.0.1:9000")
+    endpoint = endpoint.replace("http://", "").replace("https://", "")
+    scheme = "https" if (os.getenv("MINIO_SECURE", "false").lower() == "true") else "http"
+    bucket = get_minio_bucket()
+    return f"{scheme}://{endpoint}/{bucket}/{key}"
 
 
 def ensure_reports_table(db: Session):
@@ -1201,32 +1285,14 @@ async def upload_report(
         with open(fpath, "wb") as f:
             f.write(data)
         # Persist key with 'local/' prefix so readers know to use filesystem
-        object_key = f"local/reports/{fname}"
+        db_object_key = f"local/reports/{fname}"
     else:
-        # Try MinIO first; on failure, fallback to local
-        object_key = f"reports/{idfn}.{ext}"
-        try:
-            mc = get_minio_client()
-            bucket = get_minio_bucket()
-            try:
-                if not mc.bucket_exists(bucket):
-                    mc.make_bucket(bucket)
-            except Exception:
-                pass
-            mc.put_object(bucket, object_key, io.BytesIO(data), length=len(data), content_type=report.content_type or "application/octet-stream")
-        except Exception:
-            # Fallback to local storage
-            base_dir = get_report_storage_dir()
-            reports_dir = os.path.join(base_dir, "reports")
-            try:
-                os.makedirs(reports_dir, exist_ok=True)
-            except Exception:
-                pass
-            fname = f"{idfn}.{ext}"
-            fpath = os.path.join(reports_dir, fname)
-            with open(fpath, "wb") as f:
-                f.write(data)
-            object_key = f"local/reports/{fname}"
+        # Strict MinIO storage via MinioStorage helper
+        storage = MinioStorage()
+        object_key = f"{idfn}.{ext}"
+        storage.put_report(object_key, data, report.content_type or "application/octet-stream")
+        # Store a fully-qualified URL in DB so the frontend can use it directly
+        db_object_key = _build_minio_url(object_key)
 
     # compute due
     due = None
@@ -1263,12 +1329,28 @@ async def upload_report(
               updated_by = EXCLUDED.updated_by,
               updated_at = NOW()
         """
-    ), {"gid": gauge_id, "idfn": idfn, "okey": object_key, "user": updated_by})
+    ), {"gid": gauge_id, "idfn": idfn, "okey": db_object_key, "user": updated_by})
     db.commit()
     return {"success": True, "object_key": object_key}
 
 
 def _object_response(bucket: str, object_key: str, inline: bool):
+    # If DB stored a full URL, try to fetch bytes from MinIO so we can control Content-Disposition
+    if object_key.startswith("http://") or object_key.startswith("https://"):
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(object_key)
+            path = (parsed.path or "/").lstrip("/")
+            # Path is typically '<bucket>/<key>'
+            parts = path.split("/", 1)
+            key_from_url = parts[1] if len(parts) == 2 else (parts[0] if parts else object_key)
+            storage = MinioStorage()
+            storage.stat(key_from_url)
+            data = storage.get_bytes(key_from_url)
+            object_key = key_from_url  # use for content-type and filename detection below
+        except Exception:
+            # Fall back to redirect if parsing/fetching fails
+            return RedirectResponse(object_key, status_code=302)
     # Serve from local storage if the key indicates local or storage mode is local
     if object_key.startswith("local/") or get_report_storage_mode() == "local":
         base_dir = get_report_storage_dir()
@@ -1283,32 +1365,10 @@ def _object_response(bucket: str, object_key: str, inline: bool):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to read report: {str(e)}")
     else:
-        mc = get_minio_client()
-        # Validate bucket and object to avoid long hangs and return helpful errors
-        try:
-            if not mc.bucket_exists(bucket):
-                raise HTTPException(status_code=404, detail="Report bucket not found")
-        except Exception as e:
-            # Connection or auth issue
-            raise HTTPException(status_code=502, detail=f"Object store not reachable: {str(e)}")
-
-        try:
-            # Will raise if object not found
-            mc.stat_object(bucket, object_key)
-        except Exception:
-            raise HTTPException(status_code=404, detail="Report file not found")
-
-        # Fetch the object; if the stream errors, surface a clear message
-        try:
-            obj = mc.get_object(bucket, object_key)
-            data = obj.read()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Failed to fetch report: {str(e)}")
-        finally:
-            try:
-                obj.close()
-            except Exception:
-                pass
+        storage = MinioStorage()
+        # Ensure the object exists and fetch bytes
+        storage.stat(object_key)
+        data = storage.get_bytes(object_key)
 
     ctype = "application/octet-stream"
     if object_key.endswith(".pdf"): ctype = "application/pdf"
@@ -1409,16 +1469,36 @@ def return_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Ses
     try:
         db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_by VARCHAR(100)"))
         db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS return_status VARCHAR(50)"))
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS return_remarks TEXT"))
     except Exception:
         pass
     # Prefer the actor provided; if missing, fall back to original requester, then a generic label
     returned_by = (payload.accepted_by or "").strip() or (req.get("requested_by") or "operator")
+    # Normalize and validate return status and remarks
+    rs = (payload.return_status or "").strip()
+    rr = (payload.return_remarks or "").strip()
+    # Map common typos/cases
+    rs_lower = rs.lower()
+    if rs_lower in ("good condition", "good", "ok", "okay"):
+        rs = "Good Condition"
+    elif rs_lower in ("needs maintenance", "needs maintainance", "needs maintainace", "maintenance", "maintainance"):
+        rs = "Needs maintenance"
+    elif rs_lower in ("damaged", "broken"):
+        rs = "Damaged"
+    elif not rs:
+        rs = None
+    # Enforce remarks when needed
+    if rs in ("Needs maintenance", "Damaged") and not rr:
+        raise HTTPException(status_code=400, detail="Remarks are required for 'Needs maintenance' or 'Damaged'")
+
     db.execute(text(
         """
         UPDATE public.gauge_requests
-        SET status = 'returned', returned_by = :returned_by, returned_at = NOW()
+        SET status = 'returned', returned_by = :returned_by, returned_at = NOW(),
+            return_status = :return_status, return_remarks = :return_remarks
         WHERE id = :id
         """
-    ), {"id": track_id, "returned_by": returned_by})
+    ), {"id": track_id, "returned_by": returned_by, "return_status": rs, "return_remarks": rr if rr else None})
     db.commit()
     return list_gauge_tracks(limit=1, offset=0, db=db)[0]

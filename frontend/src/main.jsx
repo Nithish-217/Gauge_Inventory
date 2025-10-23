@@ -23,7 +23,14 @@ import AdminHome from './pages/admin/Home.jsx'
 const root = createRoot(document.getElementById('root'))
 root.render(
   <React.StrictMode>
-    <ConfigProvider theme={{ algorithm: theme.defaultAlgorithm }}>
+    <ConfigProvider 
+      theme={{
+        algorithm: theme.defaultAlgorithm,
+        token: {
+          colorPrimary: '#1677ff',
+        },
+      }}
+    >
       <BrowserRouter>
         <Routes future={{ v7_relativeSplatPath: true }}>
           <Route path="/" element={<Layout />}> 
