@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Form, Input, Button, Typography, Alert } from 'antd'
+import { Form, Input, Button, Typography, Alert, Divider } from 'antd'
+import { UserOutlined, LockOutlined, LoginOutlined } from '@ant-design/icons'
+import './App.css'
 
 export default function App() {
   // Ensure light theme is set on mount
@@ -85,60 +87,90 @@ export default function App() {
   
 
   return (
-      <div className="container">
-        <div className="card">
-          <div className="login-header">
-            <div className="login-title-wrapper">
-              <div className="login-text-content">
-                <h1 className="login-title">Welcome to Gauge Calibration and Management System</h1>
-                <Typography.Paragraph className="login-subtitle">Sign in to continue</Typography.Paragraph>
-              </div>
-            </div>
+    <div className="container">
+      <div className="card">
+        <div className="login-header">
+          <div className="login-text-content">
+            <h1 className="login-title">Gauge Management System</h1>
+            <Typography.Paragraph className="login-subtitle">
+              Sign in to access the dashboard
+            </Typography.Paragraph>
           </div>
+        </div>
 
-        <div id="root-inner" style={{ textAlign: 'center' }}>
-          <Form layout="vertical" onSubmitCapture={handleSubmit} noValidate>
-
-            <Form.Item label="Username" required style={{ textAlign: 'left' }}>
-              <Input
-                id="username"
-                placeholder="Enter your username"
-                autoComplete="username"
+        <div id="root-inner">
+          <Form 
+            layout="vertical" 
+            onSubmitCapture={handleSubmit} 
+            noValidate
+            className="login-form"
+          >
+            <Form.Item 
+              name="username" 
+              rules={[{ required: true, message: 'Please input your username!' }]}
+            >
+              <Input 
+                prefix={<UserOutlined style={{ color: '#bfbfbf' }} />}
+                placeholder="Username"
+                size="large"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                style={{ textAlign: 'left' }}
               />
             </Form.Item>
 
-            <Form.Item label="Password" required style={{ textAlign: 'left' }}>
+            <Form.Item
+              name="password"
+              rules={[{ required: true, message: 'Please input your password!' }]}
+            >
               <Input.Password
-                id="password"
-                placeholder="Enter your password"
-                autoComplete="current-password"
+                prefix={<LockOutlined style={{ color: '#bfbfbf' }} />}
+                type="password"
+                placeholder="Password"
+                size="large"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                style={{ textAlign: 'left' }}
               />
             </Form.Item>
 
             {error && (
-              <Alert type="error" message={error} showIcon style={{ marginBottom: 12 }} />
+              <Alert 
+                type="error" 
+                message={error} 
+                showIcon 
+                style={{ marginBottom: 16, textAlign: 'left' }}
+              />
             )}
             {message && (
-              <Alert type="success" message={message} showIcon style={{ marginBottom: 12 }} />
+              <Alert 
+                type="success" 
+                message={message} 
+                showIcon 
+                style={{ marginBottom: 16, textAlign: 'left' }}
+              />
             )}
 
-            <div className="actions" style={{ display:'flex', gap:12, alignItems:'center', justifyContent:'center', marginTop: '24px' }}>
-              <Button type="primary" htmlType="submit" loading={loading} style={{ minWidth: 140, height: '44px', fontSize: '16px', fontWeight: '600' }}>
-                {loading ? 'Logging in...' : 'Login'}
+            <Form.Item style={{ marginBottom: 0 }}>
+              <Button 
+                type="primary" 
+                htmlType="submit" 
+                loading={loading}
+                icon={!loading && <LoginOutlined />}
+                size="large"
+              >
+                {loading ? 'Logging in...' : 'Sign In'}
               </Button>
-            </div>
+            </Form.Item>
           </Form>
         </div>
 
-          <p className="footer">© <span>{year}</span> CMTI. All rights reserved.</p>
+        <div className="footer">
+          <p>© {year} CMTI. All rights reserved.</p>
+          <p style={{ fontSize: '0.8em', opacity: 0.7, marginTop: '4px' }}>
+            Gauge Calibration Management System v1.0
+          </p>
         </div>
       </div>
+    </div>
   )
 }
 
