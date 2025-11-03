@@ -3,7 +3,7 @@ import { Table, Button, Input, Select, Space, Modal, Form, Input as AntInput, me
 import { DeleteOutlined, KeyOutlined, PlusOutlined, ReloadOutlined, EditOutlined, UserOutlined, LockOutlined } from '@ant-design/icons'
 
 export default function CreateUser() {
-  const [form, setForm] = useState({ username: '', email: '', password: '', role: 'operator' })
+  const [form, setForm] = useState({ username: '', email: '', password: '', role: 'operator', employee_id: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -12,6 +12,11 @@ export default function CreateUser() {
   const [pwdModal, setPwdModal] = useState({ open: false, user: null })
   const [pwdForm] = Form.useForm()
   const [showCreate, setShowCreate] = useState(false)
+  const [showEdit, setShowEdit] = useState(false)
+  const [editingUser, setEditingUser] = useState(null)
+  const [editForm, setEditForm] = useState({ username: '', email: '', role: 'operator', employee_id: '' })
+  const [editLoading, setEditLoading] = useState(false)
+  const [editError, setEditError] = useState('')
   const [q, setQ] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
   const [totalItems, setTotalItems] = useState(0)
@@ -44,15 +49,19 @@ export default function CreateUser() {
     e.preventDefault()
     setError(''); setSuccess('')
     if (!form.username || !form.email || !form.password || !form.role) {
-      setError('All fields are required.')
+      setError('Username, Email, Password, and Role are required.')
       return
     }
     try {
       setLoading(true)
+      const payload = {
+        ...form,
+        employee_id: form.employee_id?.trim() || null
+      }
       const res = await fetch('/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form)
+        body: JSON.stringify(payload)
       })
       if (!res.ok) {
         const txt = await res.text()
@@ -60,7 +69,7 @@ export default function CreateUser() {
       }
       const data = await res.json()
       setSuccess(`User created with id ${data.id}`)
-      setForm({ username: '', email: '', password: '', role: 'operator' })
+      setForm({ username: '', email: '', password: '', role: 'operator', employee_id: '' })
       message.success('User created')
       fetchUsers()
       setShowCreate(false)
@@ -88,6 +97,60 @@ export default function CreateUser() {
         }
       }
     })
+  }
+
+  const openEdit = (user) => {
+    setEditingUser(user)
+    setEditForm({
+      username: user.username || '',
+      email: user.email || '',
+      role: user.role || 'operator',
+      employee_id: user.employee_id || ''
+    })
+    setEditError('')
+    setShowEdit(true)
+  }
+
+  const onEditChange = (e) => {
+    const { name, value } = e.target
+    setEditForm((f) => ({ ...f, [name]: value }))
+  }
+
+  const onSubmitEdit = async (e) => {
+    e.preventDefault()
+    setEditError('')
+    if (!editForm.username || !editForm.email || !editForm.role) {
+      setEditError('Username, Email, and Role are required.')
+      return
+    }
+    try {
+      setEditLoading(true)
+      const payload = {
+        username: editForm.username.trim(),
+        email: editForm.email.trim(),
+        role: editForm.role,
+        employee_id: editForm.employee_id?.trim() || null
+      }
+      const res = await fetch(`/users/${editingUser.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (!res.ok) {
+        const txt = await res.text()
+        throw new Error(txt || 'Failed to update user')
+      }
+      message.success('User updated successfully')
+      fetchUsers()
+      setShowEdit(false)
+      setEditingUser(null)
+      setEditForm({ username: '', email: '', role: 'operator', employee_id: '' })
+    } catch (err) {
+      setEditError(typeof err?.message === 'string' ? err.message : 'Failed to update user')
+      message.error(typeof err?.message === 'string' ? err.message : 'Failed to update user')
+    } finally {
+      setEditLoading(false)
+    }
   }
 
   const openChangePassword = (user) => {
@@ -130,6 +193,16 @@ export default function CreateUser() {
       sorter: (a,b) => String(a.username||'').localeCompare(String(b.username||''))
     },
     { 
+      title: 'Employee ID', 
+      dataIndex: 'employee_id', 
+      key: 'employee_id', 
+      ellipsis: true,
+      width: 140,
+      align: 'center',
+      render: (text) => text ? <span>{text}</span> : <span style={{ color: '#999' }}>—</span>,
+      sorter: (a,b) => String(a.employee_id||'').localeCompare(String(b.employee_id||''))
+    },
+    { 
       title: 'Email', 
       dataIndex: 'email', 
       key: 'email', 
@@ -167,10 +240,17 @@ export default function CreateUser() {
     { 
       title: 'Actions', 
       key: 'actions', 
-      width: 160, 
+      width: 200, 
       align: 'center',
       render: (_, row) => (
         <Space size="small">
+          <Button 
+            type="text" 
+            icon={<EditOutlined />} 
+            onClick={()=>openEdit(row)}
+            title="Edit User"
+            style={{ color: '#52c41a' }}
+          />
           <Button 
             type="text" 
             icon={<LockOutlined />} 
@@ -288,8 +368,18 @@ export default function CreateUser() {
                 value={form.role} 
                 onChange={(v)=>setForm(f=>({...f, role:v}))} 
                 options={[{value:'admin', label:'Admin'},{value:'operator', label:'Operator'}]}
-                className="form-input"
                 style={{ width: '100%' }}
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label">Employee ID</label>
+              <input
+                className="form-input"
+                id="employee_id"
+                name="employee_id"
+                value={form.employee_id}
+                onChange={onChange}
+                placeholder="Enter employee ID (optional)"
               />
             </div>
           </div>
@@ -342,6 +432,92 @@ export default function CreateUser() {
           />
         </div>
       </div>
+
+      <Modal
+        title={`Edit User - ${editingUser?.username || ''}`}
+        open={showEdit}
+        onCancel={() => {
+          setShowEdit(false)
+          setEditingUser(null)
+          setEditForm({ username: '', email: '', role: 'operator', employee_id: '' })
+          setEditError('')
+        }}
+        footer={null}
+        destroyOnClose
+        className="professional-modal"
+        width={600}
+      >
+        <form onSubmit={onSubmitEdit}>
+          <div className="form-grid">
+            <div className="form-field">
+              <label className="form-label required">Username</label>
+              <input
+                className="form-input"
+                id="edit_username"
+                name="username"
+                value={editForm.username}
+                onChange={onEditChange}
+                placeholder="Enter username"
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label required">Email</label>
+              <input
+                className="form-input"
+                id="edit_email"
+                name="email"
+                type="email"
+                value={editForm.email}
+                onChange={onEditChange}
+                placeholder="Enter email address"
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label required">Role</label>
+              <Select 
+                id="edit_role" 
+                value={editForm.role} 
+                onChange={(v)=>setEditForm(f=>({...f, role:v}))} 
+                options={[{value:'admin', label:'Admin'},{value:'operator', label:'Operator'}]}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label">Employee ID</label>
+              <input
+                className="form-input"
+                id="edit_employee_id"
+                name="employee_id"
+                value={editForm.employee_id}
+                onChange={onEditChange}
+                placeholder="Enter employee ID (optional)"
+              />
+            </div>
+          </div>
+          {editError && <div className="form-error" style={{marginTop: 16, fontSize: 14}}>{editError}</div>}
+          <div className="form-actions">
+            <button
+              type="button"
+              className="form-button form-button-cancel"
+              onClick={() => {
+                setShowEdit(false)
+                setEditingUser(null)
+                setEditForm({ username: '', email: '', role: 'operator', employee_id: '' })
+                setEditError('')
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className={`form-button form-button-primary ${editLoading ? 'loading' : ''}`}
+              disabled={editLoading}
+            >
+              {editLoading ? 'Updating...' : 'Update User'}
+            </button>
+          </div>
+        </form>
+      </Modal>
 
       <Modal
         title={pwdModal.user ? `Change Password: ${pwdModal.user.username}` : 'Change Password'}

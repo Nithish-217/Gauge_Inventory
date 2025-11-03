@@ -14,6 +14,9 @@ export default function ReportManager() {
   const [currentPage, setCurrentPage] = useState(1)
   const [totalItems, setTotalItems] = useState(0)
   const [pageSize, setPageSize] = useState(10)
+  const [pdfViewerOpen, setPdfViewerOpen] = useState(false)
+  const [pdfViewerUrl, setPdfViewerUrl] = useState(null)
+  const [pdfViewerTitle, setPdfViewerTitle] = useState('')
   const scrollRef = useRef(null)
 
   // Ensure form fields are prefilled when modal opens
@@ -213,7 +216,11 @@ export default function ReportManager() {
             type="text" 
             icon={<EyeOutlined />} 
             disabled={!row.object_key} 
-            onClick={()=> window.open(`/reports/${row.gauge_id}/view`, '_blank')}
+            onClick={()=> {
+              setPdfViewerUrl(`/reports/${row.gauge_id}/view`)
+              setPdfViewerTitle(row.name_of_the_equipment || `Report - ${row.gauge_id}`)
+              setPdfViewerOpen(true)
+            }}
             title="View Report"
             style={{ color: '#1890ff' }}
           />
@@ -380,6 +387,25 @@ export default function ReportManager() {
             <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={pdfViewerTitle || 'View Report'}
+        open={pdfViewerOpen}
+        onCancel={() => { setPdfViewerOpen(false); setPdfViewerUrl(null); setPdfViewerTitle('') }}
+        footer={null}
+        width="90%"
+        style={{ top: 20 }}
+        destroyOnClose
+        centered
+      >
+        {pdfViewerUrl && (
+          <iframe
+            src={pdfViewerUrl}
+            style={{ width: '100%', height: '80vh', border: 'none' }}
+            title="PDF Viewer"
+          />
+        )}
       </Modal>
     </div>
   )

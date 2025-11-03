@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Table, Button, Input, InputNumber, Space, message, Modal, Pagination } from 'antd'
 import { ReloadOutlined, PlusOutlined, EditOutlined, DeleteOutlined, ShoppingCartOutlined } from '@ant-design/icons'
 
+const { TextArea } = Input
+
 export default function EquipmentTable({ mode = 'admin' }) {
   const [items, setItems] = useState([])
   const [q, setQ] = useState('')
@@ -38,6 +40,9 @@ export default function EquipmentTable({ mode = 'admin' }) {
   const [requesting, setRequesting] = useState({}) // { [gauge_id]: boolean }
   const [requestedMap, setRequestedMap] = useState({}) // { [gauge_id]: boolean }
   const [fieldErrors, setFieldErrors] = useState({}) // { [name]: message }
+  const [purposeModalOpen, setPurposeModalOpen] = useState(false)
+  const [purposeModalGauge, setPurposeModalGauge] = useState(null)
+  const [purposeValue, setPurposeValue] = useState('')
   const [form, setForm] = useState({
     name_of_the_equipment: '',
     location: '',
@@ -327,11 +332,25 @@ export default function EquipmentTable({ mode = 'admin' }) {
     }
   }
 
-  const onRequest = async (row) => {
+  const onRequest = (row) => {
     const gid = Number(row?.gauge_id)
     if (!gid) { setError('Row not found.'); return }
     // Block if already requesting or requested
     if (requesting[gid] || requestedMap[gid]) return
+    // Open purpose modal first
+    setPurposeModalGauge(row)
+    setPurposeValue('')
+    setPurposeModalOpen(true)
+  }
+
+  const submitRequest = async () => {
+    const row = purposeModalGauge
+    const gid = Number(row?.gauge_id)
+    if (!gid) { setError('Row not found.'); return }
+    // Block if already requesting or requested
+    if (requesting[gid] || requestedMap[gid]) return
+    
+    setPurposeModalOpen(false)
     try {
       setRequesting(prev => ({ ...prev, [gid]: true }))
       const payload = {
@@ -342,6 +361,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
         make_model: row.make_model || null,
         quantity: 1,
         requested_by: requestedBy || null,
+        purpose: (purposeValue || '').trim() || null,
       }
       // Try new Gauge Tracker endpoint first
       const res = await fetch('/gauge-tracker', {
@@ -373,6 +393,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
       }
       setRequestedMap(prev => ({ ...prev, [gid]: true }))
       message.success('Request saved to Gauge Tracker')
+      setPurposeValue('')
     } catch (err) {
       const msg = typeof err?.message === 'string' ? err.message : 'Failed to save request'
       setError(msg)
@@ -809,6 +830,43 @@ export default function EquipmentTable({ mode = 'admin' }) {
             </button>
           </div>
         </form>
+      </Modal>
+
+      <Modal
+        title={`Request Gauge - ${purposeModalGauge?.name_of_the_equipment || ''}`}
+        open={purposeModalOpen}
+        onCancel={() => {
+          setPurposeModalOpen(false)
+          setPurposeModalGauge(null)
+          setPurposeValue('')
+        }}
+        footer={[
+          <Button
+            key="submit"
+            type="primary"
+            onClick={submitRequest}
+          >
+            Submit Request
+          </Button>
+        ]}
+        destroyOnClose
+      >
+        <div style={{ marginTop: 16 }}>
+          <div style={{ marginBottom: 8 }}>
+            <label style={{ fontSize: 14, fontWeight: 500 }}>Purpose</label>
+            <p style={{ fontSize: 12, color: '#666', marginTop: 4, marginBottom: 8 }}>
+              Please mention the purpose for requesting this gauge
+            </p>
+          </div>
+          <TextArea
+            value={purposeValue}
+            onChange={(e) => setPurposeValue(e.target.value)}
+            placeholder="E.g., For calibration of temperature sensors..."
+            rows={4}
+            maxLength={500}
+            showCount
+          />
+        </div>
       </Modal>
 
       {error && <div className="error" style={{marginBottom: 8}}>{error}</div>}

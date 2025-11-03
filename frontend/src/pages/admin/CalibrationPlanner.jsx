@@ -10,6 +10,7 @@ export default function CalibrationPlanner() {
   const [detailModal, setDetailModal] = React.useState({ open: false, date: '', events: [] })
   const [value, setValue] = React.useState(dayjs())
   const [mode, setMode] = React.useState('month') // 'month' | 'year'
+  const [requestedGaugeIds, setRequestedGaugeIds] = React.useState(new Set()) // Set of gauge_ids that have been requested
   
   // Calculate KPIs for the selected month
   const kpis = React.useMemo(() => {
@@ -98,7 +99,33 @@ export default function CalibrationPlanner() {
     }
   }
 
-  React.useEffect(() => { fetchAll() }, [])
+  const fetchRequestedGauges = async () => {
+    try {
+      const allRequests = []
+      let page = 0
+      const pageLimit = 500 // Max limit allowed by backend
+      while (true) {
+        const params = new URLSearchParams({ limit: String(pageLimit), offset: String(page * pageLimit) })
+        const res = await fetch(`/gauge-tracker?${params.toString()}`)
+        if (!res.ok) break
+        const data = await res.json()
+        const chunk = Array.isArray(data) ? data : []
+        allRequests.push(...chunk)
+        if (chunk.length < pageLimit) break
+        page += 1
+      }
+      const gaugeIds = new Set(allRequests.map(r => r.gauge_id).filter(id => id != null))
+      setRequestedGaugeIds(gaugeIds)
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to fetch requested gauges:', e)
+    }
+  }
+
+  React.useEffect(() => { 
+    fetchAll()
+    fetchRequestedGauges()
+  }, [])
 
   const adminName = React.useMemo(() => {
     try { return localStorage.getItem('username') || 'Admin' } catch { return 'Admin' }
@@ -211,7 +238,7 @@ export default function CalibrationPlanner() {
             </span>
           </div>
           <div className="action-buttons">
-            <Button icon={<ReloadOutlined />} onClick={fetchAll}>Refresh</Button>
+            <Button icon={<ReloadOutlined />} onClick={() => { fetchAll(); fetchRequestedGauges() }}>Refresh</Button>
           </div>
         </div>
 
@@ -340,9 +367,10 @@ export default function CalibrationPlanner() {
           dataSource={detailModal.events}
           renderItem={(ev)=>{
             const isDue = ev.type === 'processing'
+            const hasBeenRequested = ev.gauge_id && requestedGaugeIds.has(ev.gauge_id)
             return (
               <List.Item style={{padding:'6px 0'}}
-                actions={isDue && ev.gauge_id ? [
+                actions={isDue && ev.gauge_id && hasBeenRequested ? [
                   <Button key="remind" type="link" onClick={()=>sendReminder(ev.gauge_id)}>Send Reminder</Button>
                 ] : undefined}
               >

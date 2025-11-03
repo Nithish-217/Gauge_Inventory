@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Table, Button, Space, Tag, message, Input } from 'antd'
+import { Table, Button, Space, Tag, message, Input, Modal } from 'antd'
 
 export default function CalibrationReport() {
   const [rows, setRows] = useState([])
@@ -7,6 +7,9 @@ export default function CalibrationReport() {
   const [q, setQ] = useState('')
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(true)
+  const [pdfViewerOpen, setPdfViewerOpen] = useState(false)
+  const [pdfViewerUrl, setPdfViewerUrl] = useState(null)
+  const [pdfViewerTitle, setPdfViewerTitle] = useState('')
   const scrollRef = useRef(null)
   const username = (()=>{ try { return localStorage.getItem('username') || '' } catch { return '' } })()
 
@@ -70,8 +73,14 @@ export default function CalibrationReport() {
     { title: 'Due', dataIndex: 'calibration_due', key: 'due', width: 160, render:(v)=> v ? new Date(v).toLocaleDateString() : '' },
     { title: 'Report', dataIndex: 'object_key', key: 'report', width: 220, fixed: 'right', align:'right', render:(_,row)=> (
       <Space>
-        <Button onClick={async ()=> {
-          try { window.open(`/reports/${row.gauge_id}/view`, '_blank') } catch { message.error('Report not available') }
+        <Button onClick={()=> {
+          try {
+            setPdfViewerUrl(`/reports/${row.gauge_id}/view`)
+            setPdfViewerTitle(row.name_of_the_equipment || `Report - ${row.gauge_id}`)
+            setPdfViewerOpen(true)
+          } catch (e) {
+            message.error('Report not available')
+          }
         }}>View</Button>
         <Button onClick={async ()=> {
           try { window.open(`/reports/${row.gauge_id}/download`, '_self') } catch { message.error('Report not available') }
@@ -126,6 +135,25 @@ export default function CalibrationReport() {
           </div>
         </div>
       </div>
+
+      <Modal
+        title={pdfViewerTitle || 'View Report'}
+        open={pdfViewerOpen}
+        onCancel={() => { setPdfViewerOpen(false); setPdfViewerUrl(null); setPdfViewerTitle('') }}
+        footer={null}
+        width="90%"
+        style={{ top: 20 }}
+        destroyOnClose
+        centered
+      >
+        {pdfViewerUrl && (
+          <iframe
+            src={pdfViewerUrl}
+            style={{ width: '100%', height: '80vh', border: 'none' }}
+            title="PDF Viewer"
+          />
+        )}
+      </Modal>
     </div>
   )
 }

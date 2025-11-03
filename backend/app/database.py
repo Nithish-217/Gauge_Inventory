@@ -7,7 +7,7 @@ load_dotenv()
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg://postgres:postgres@localhost:5432/gage2",
+    "postgresql+psycopg://postgres:root@localhost:5432/gage",
 )
 
 engine = create_engine(

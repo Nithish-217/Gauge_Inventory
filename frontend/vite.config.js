@@ -5,51 +5,51 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 3006,
-    host: '172.18.100.67',
+    host: 'localhost',
     open: false,
     proxy: {
       '/auth': {
-        target: 'http://172.18.100.67:3432',
+        target: 'http://localhost:5657',
         changeOrigin: true,
         secure: false
       },
       '/users': {
-        target: 'http://172.18.100.67:3432',
+        target: 'http://localhost:5657',
         changeOrigin: true,
         secure: false
       },
       '/equipment': {
-        target: 'http://172.18.100.67:3432',
+        target: 'http://localhost:5657',
         changeOrigin: true,
         secure: false
       },
       '/gauge-tracker': {
-        target: 'http://172.18.100.67:3432',
+        target: 'http://localhost:5657',
         changeOrigin: true,
         secure: false
       },
       '/requests': {
-        target: 'http://172.18.100.67:3432',
+        target: 'http://localhost:5657',
         changeOrigin: true,
         secure: false
       },
       '/barcode': {
-        target: 'http://172.18.100.67:3432',
+        target: 'http://localhost:5657',
         changeOrigin: true,
         secure: false
       },
       '/qrcode': {
-        target: 'http://172.18.100.67:3432',
+        target: 'http://localhost:5657',
         changeOrigin: true,
         secure: false
       },
       '/reports': {
-        target: 'http://172.18.100.67:3432',
+        target: 'http://localhost:5657',
         changeOrigin: true,
         secure: false
       },
       '/reminders': {
-        target: 'http://172.18.100.67:3432',
+        target: 'http://localhost:5657',
         changeOrigin: true,
         secure: false
       },

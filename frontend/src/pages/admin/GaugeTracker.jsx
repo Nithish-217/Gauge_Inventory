@@ -89,6 +89,55 @@ export default function GaugeTracker() {
     }},
     { title: 'Requested By', dataIndex: 'requested_by', key: 'requested_by', width: 140, ellipsis: true },
     { title: 'Requested At', dataIndex: 'requested_at', key: 'requested_at', width: 180, render:(v)=> v ? new Date(v).toLocaleString() : '' },
+    { 
+      title: 'Purpose', 
+      dataIndex: 'purpose', 
+      key: 'purpose', 
+      width: 200, 
+      ellipsis: true,
+      render: (text) => text ? <span title={text}>{text}</span> : <span style={{ color: '#999' }}>—</span>
+    },
+    { 
+      title: 'Return Condition', 
+      dataIndex: 'return_status', 
+      key: 'return_status', 
+      width: 200, 
+      align: 'center',
+      render: (text, record) => {
+        if (!text) return <span style={{ color: '#999' }}>—</span>
+        // If status is "Custom", show the actual remarks text instead
+        if (text === 'Custom' && record.return_remarks) {
+          return (
+            <span 
+              style={{ 
+                display: 'inline-block',
+                padding: '4px 12px',
+                background: '#e6f7ff',
+                border: '1px solid #91d5ff',
+                borderRadius: '4px',
+                color: '#1890ff',
+                fontSize: '12px',
+                maxWidth: '100%',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+              }}
+              title={record.return_remarks}
+            >
+              {record.return_remarks}
+            </span>
+          )
+        }
+        const colorMap = {
+          'Good': 'green',
+          'Bad': 'red',
+          'Needs Repair': 'orange',
+          'Custom': 'blue'
+        }
+        const color = colorMap[text] || 'default'
+        return <Tag color={color}>{text}</Tag>
+      }
+    },
     { title: 'Actions', key: 'holder', width: 260, render:(_,row)=> {
       const s = (row.status||'').toLowerCase()
       if (s === 'accepted') {

@@ -15,6 +15,7 @@ class UserPublic(BaseModel):
     username: str
     email: EmailStr
     role: str
+    employee_id: str | None = None
     created_at: datetime
 
     class Config:
@@ -32,6 +33,14 @@ class CreateUserRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=6)
     role: str = Field(..., pattern=r"^(admin|operator)$")
+    employee_id: str | None = Field(None, max_length=50)
+
+
+class UpdateUserRequest(BaseModel):
+    username: str | None = Field(None, min_length=3, max_length=50)
+    email: EmailStr | None = None
+    role: str | None = Field(None, pattern=r"^(admin|operator)$")
+    employee_id: str | None = Field(None, max_length=50)
 
 
 class EquipmentCreate(BaseModel):
@@ -90,6 +99,7 @@ class GaugeTrackCreate(BaseModel):
     make_model: str | None = None
     quantity: int = 1
     requested_by: str | None = None
+    purpose: str | None = None  # Purpose for requesting the gauge
 
 
 class GaugeTrackPublic(BaseModel):
@@ -107,13 +117,14 @@ class GaugeTrackPublic(BaseModel):
     accepted_at: datetime | None = None
     returned_by: str | None = None
     returned_at: datetime | None = None
-    return_status: str | None = None
+    purpose: str | None = None  # Purpose for requesting the gauge
+    return_status: str | None = None  # Return condition: Good, Bad, Needs Repair, or Custom
     return_remarks: str | None = None
 
 
 class GaugeTrackAction(BaseModel):
     accepted_by: str | None = None
-    return_status: str | None = None  # Good Condition | Needs maintenance | Damaged
+    return_status: str | None = None  # Good, Bad, Needs Repair, or Custom (return condition)
     return_remarks: str | None = None
 
 

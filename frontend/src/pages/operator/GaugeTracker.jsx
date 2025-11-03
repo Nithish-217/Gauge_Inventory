@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Table, Button, Space, Tag, message, Popover, Select, DatePicker, Pagination, Input } from 'antd'
-import { FilterOutlined, ReloadOutlined, CheckOutlined, CloseOutlined, UndoOutlined } from '@ant-design/icons'
+import { Table, Button, Space, Tag, message, Popover, Select, DatePicker, Pagination, Input, Modal, Radio } from 'antd'
+import { FilterOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
+
+const { TextArea } = Input
 
 export default function OperatorGaugeTracker() {
   const [rows, setRows] = useState([])
@@ -14,6 +16,10 @@ export default function OperatorGaugeTracker() {
   const [filterOpen, setFilterOpen] = useState(false)
   const [statusFilter, setStatusFilter] = useState(undefined)
   const [dateFilter, setDateFilter] = useState(null)
+  const [returnModalOpen, setReturnModalOpen] = useState(false)
+  const [returnModalRow, setReturnModalRow] = useState(null)
+  const [returnCondition, setReturnCondition] = useState('Good')
+  const [returnRemarks, setReturnRemarks] = useState('')
 
   const limit = pageSize
   const fetchRows = async (opts = {}) => {
@@ -37,15 +43,40 @@ export default function OperatorGaugeTracker() {
 
   useEffect(() => { fetchRows({ page: currentPage - 1 }) }, [username, currentPage, pageSize])
 
-  const onReturn = async (row) => {
+  const onReturn = (row) => {
+    // Open return modal first
+    setReturnModalRow(row)
+    setReturnCondition('Good')
+    setReturnRemarks('')
+    setReturnModalOpen(true)
+  }
+
+  const submitReturn = async () => {
+    const row = returnModalRow
+    if (!row) return
+    
+    // Validate: remarks required for Bad or Needs Repair
+    if ((returnCondition === 'Bad' || returnCondition === 'Needs Repair') && !returnRemarks.trim()) {
+      message.warning('Remarks are required for Bad or Needs Repair condition')
+      return
+    }
+    
+    setReturnModalOpen(false)
     try {
       const res = await fetch(`/gauge-tracker/${row.id}/return`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accepted_by: username || 'operator' })
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accepted_by: username || 'operator',
+          return_status: returnCondition,
+          return_remarks: returnRemarks.trim() || null
+        })
       })
       if (!res.ok) throw new Error(await res.text() || 'Failed to return')
       message.success('Marked as returned')
       setCurrentPage(1); fetchRows({ page: 0, reset: true })
+      setReturnCondition('Good')
+      setReturnRemarks('')
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Failed to return')
     }
@@ -91,6 +122,55 @@ export default function OperatorGaugeTracker() {
       }
     },
     { 
+      title: 'Purpose', 
+      dataIndex: 'purpose', 
+      key: 'purpose', 
+      width: 200, 
+      ellipsis: true,
+      render: (text) => text ? <span title={text}>{text}</span> : <span style={{ color: '#999' }}>—</span>
+    },
+    { 
+      title: 'Return Condition', 
+      dataIndex: 'return_status', 
+      key: 'return_status', 
+      width: 200, 
+      align: 'center',
+      render: (text, record) => {
+        if (!text) return <span style={{ color: '#999' }}>—</span>
+        // If status is "Custom", show the actual remarks text instead
+        if (text === 'Custom' && record.return_remarks) {
+          return (
+            <span 
+              style={{ 
+                display: 'inline-block',
+                padding: '4px 12px',
+                background: '#e6f7ff',
+                border: '1px solid #91d5ff',
+                borderRadius: '4px',
+                color: '#1890ff',
+                fontSize: '12px',
+                maxWidth: '100%',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+              }}
+              title={record.return_remarks}
+            >
+              {record.return_remarks}
+            </span>
+          )
+        }
+        const colorMap = {
+          'Good': 'green',
+          'Bad': 'red',
+          'Needs Repair': 'orange',
+          'Custom': 'blue'
+        }
+        const color = colorMap[text] || 'default'
+        return <Tag color={color}>{text}</Tag>
+      }
+    },
+    { 
       title: 'Holder', 
       key: 'holder', 
       width: 280, 
@@ -120,20 +200,13 @@ export default function OperatorGaugeTracker() {
         return (
           <Space size="small">
             <Button 
-              type="text" 
-              icon={<ReloadOutlined />} 
-              onClick={fetchRows}
-              title="Refresh"
-              style={{ color: '#1890ff' }}
-            />
-            <Button 
-              type="text" 
-              icon={<UndoOutlined />} 
+              type={canReturn ? 'primary' : 'default'}
               onClick={()=>onReturn(row)} 
               disabled={!canReturn}
-              title="Return"
-              style={{ color: canReturn ? '#52c41a' : '#d9d9d9' }}
-            />
+              title={canReturn ? 'Return' : 'Only accepted requests can be returned'}
+            >
+              Return
+            </Button>
           </Space>
         )
       }
@@ -212,12 +285,7 @@ export default function OperatorGaugeTracker() {
             </Popover>
           </div>
           <div className="action-buttons">
-            <Button 
-              icon={<ReloadOutlined />} 
-              onClick={() => { setCurrentPage(1); fetchRows({ page:0, reset:true }) }}
-            >
-              Refresh
-            </Button>
+            {/* Refresh button hidden */}
           </div>
         </div>
 
@@ -249,6 +317,90 @@ export default function OperatorGaugeTracker() {
           />
         </div>
       </div>
+
+      <Modal
+        title={`Return Gauge - ${returnModalRow?.name_of_the_equipment || ''}`}
+        open={returnModalOpen}
+        onCancel={() => {
+          setReturnModalOpen(false)
+          setReturnModalRow(null)
+          setReturnCondition('Good')
+          setReturnRemarks('')
+        }}
+        footer={[
+          <Button
+            key="cancel"
+            onClick={() => {
+              setReturnModalOpen(false)
+              setReturnModalRow(null)
+              setReturnCondition('Good')
+              setReturnRemarks('')
+            }}
+          >
+            Cancel
+          </Button>,
+          <Button
+            key="submit"
+            type="primary"
+            onClick={submitReturn}
+          >
+            Submit Return
+          </Button>
+        ]}
+        destroyOnClose
+      >
+        <div style={{ marginTop: 16 }}>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 14, fontWeight: 500, display: 'block', marginBottom: 8 }}>
+              Return Condition <span style={{ color: '#ff4d4f' }}>*</span>
+            </label>
+            <Radio.Group
+              value={returnCondition}
+              onChange={(e) => {
+                setReturnCondition(e.target.value)
+                // Clear remarks when switching to Good
+                if (e.target.value === 'Good') {
+                  setReturnRemarks('')
+                }
+              }}
+              style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+            >
+              <Radio value="Good">Good</Radio>
+              <Radio value="Bad">Bad</Radio>
+              <Radio value="Needs Repair">Needs Repair</Radio>
+              <Radio value="Custom">Custom</Radio>
+            </Radio.Group>
+          </div>
+          
+          <div style={{ marginBottom: 8 }}>
+            <label style={{ fontSize: 14, fontWeight: 500, display: 'block', marginBottom: 4 }}>
+              Remarks
+              {(returnCondition === 'Bad' || returnCondition === 'Needs Repair') && (
+                <span style={{ color: '#ff4d4f' }}> *</span>
+              )}
+            </label>
+            <p style={{ fontSize: 12, color: '#666', marginTop: 4, marginBottom: 8 }}>
+              {(returnCondition === 'Bad' || returnCondition === 'Needs Repair')
+                ? 'Remarks are required for this condition'
+                : 'Additional details about the return condition (optional)'}
+            </p>
+            <TextArea
+              value={returnRemarks}
+              onChange={(e) => setReturnRemarks(e.target.value)}
+              placeholder={
+                returnCondition === 'Good' ? 'Optional: Any additional notes...' :
+                returnCondition === 'Bad' || returnCondition === 'Needs Repair'
+                  ? 'Please describe the issue...'
+                  : 'Enter custom condition details...'
+              }
+              rows={4}
+              maxLength={500}
+              showCount
+              required={returnCondition === 'Bad' || returnCondition === 'Needs Repair'}
+            />
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

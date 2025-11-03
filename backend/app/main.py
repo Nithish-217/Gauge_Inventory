@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime
-from sqlalchemy import text
+from sqlalchemy import text, or_
 from fastapi.responses import StreamingResponse
 import io
 from barcode import Code128
@@ -43,6 +43,41 @@ app.add_middleware(
 )
 
 
+def ensure_employee_id_column(db: Session):
+    """Ensure employee_id column exists in users table"""
+    try:
+        # Check if column exists using information_schema
+        result = db.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_schema = 'public' 
+            AND table_name = 'users' 
+            AND column_name = 'employee_id'
+        """))
+        exists = result.first() is not None
+        if not exists:
+            # Column doesn't exist, create it
+            db.execute(text("ALTER TABLE public.users ADD COLUMN employee_id VARCHAR(50)"))
+            db.commit()
+            # Create indexes
+            try:
+                db.execute(text("CREATE INDEX IF NOT EXISTS idx_users_employee_id ON public.users(employee_id)"))
+                db.commit()
+            except Exception:
+                db.rollback()
+            try:
+                db.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_employee_id_unique ON public.users(employee_id) WHERE employee_id IS NOT NULL"))
+                db.commit()
+            except Exception:
+                db.rollback()
+    except Exception as e:
+        try:
+            db.rollback()
+        except:
+            pass
+        # Column might already exist, or there's another issue - continue anyway
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -50,16 +85,46 @@ def health():
 
 @app.post("/auth/login", response_model=schemas.LoginResponse)
 def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
-    # Normalize provided username (trim spaces)
-    provided_username = (payload.username or "").strip()
-    # Find user by username (case-insensitive match)
-    user = (
-        db.query(models.User)
-        .filter(models.User.username.ilike(provided_username))
-        .first()
-    )
-    if not user:
+    # Ensure employee_id column exists (for backward compatibility)
+    ensure_employee_id_column(db)
+    
+    # Normalize provided username/employee_id (trim spaces)
+    provided_identifier = (payload.username or "").strip()
+    
+    # Find user by username or employee_id (case-insensitive match)
+    # Use raw SQL query to handle employee_id safely - check if column exists first
+    try:
+        # Try with employee_id first
+        user_result = db.execute(text("""
+            SELECT id, username, password_hash, role, email, employee_id, created_at
+            FROM public.users
+            WHERE LOWER(username) = LOWER(:identifier)
+               OR (employee_id IS NOT NULL AND LOWER(employee_id) = LOWER(:identifier))
+            LIMIT 1
+        """), {"identifier": provided_identifier}).mappings().first()
+    except Exception:
+        # If employee_id column doesn't exist yet, query without it
+        user_result = db.execute(text("""
+            SELECT id, username, password_hash, role, email, created_at
+            FROM public.users
+            WHERE LOWER(username) = LOWER(:identifier)
+            LIMIT 1
+        """), {"identifier": provided_identifier}).mappings().first()
+    
+    if not user_result:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    
+    # Create a User object from the result
+    employee_id_val = user_result.get("employee_id") if "employee_id" in user_result else None
+    user = models.User(
+        id=user_result["id"],
+        username=user_result["username"],
+        password_hash=user_result["password_hash"],
+        role=user_result["role"],
+        email=user_result["email"],
+        employee_id=employee_id_val,
+        created_at=user_result["created_at"]
+    )
 
     # Verify password using bcrypt hash stored in password_hash
     if not verify_password(payload.password, user.password_hash):
@@ -74,40 +139,180 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
 
 @app.post("/users", response_model=schemas.UserPublic, status_code=status.HTTP_201_CREATED)
 def create_user(payload: schemas.CreateUserRequest, db: Session = Depends(get_db)):
+    # Ensure employee_id column exists
+    ensure_employee_id_column(db)
+    
     # Normalize role
     role = payload.role.lower()
     if role not in ("admin", "operator"):
         raise HTTPException(status_code=400, detail="Role must be 'admin' or 'operator'")
+
+    employee_id = payload.employee_id.strip() if payload.employee_id else None
+    if employee_id and len(employee_id) == 0:
+        employee_id = None
 
     user = models.User(
         username=payload.username,
         email=payload.email,
         role=role,
         password_hash=get_password_hash(payload.password),
+        employee_id=employee_id,
     )
     try:
         db.add(user)
         db.commit()
-        db.refresh(user)
-    except IntegrityError:
+        # Refresh user - need to handle employee_id column
+        try:
+            db.refresh(user)
+        except Exception:
+            # If refresh fails due to employee_id, manually reload
+            db.execute(text("SELECT 1"))  # Reconnect if needed
+            user = db.query(models.User).filter(models.User.id == user.id).first()
+    except IntegrityError as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Username or email already exists")
+        error_msg = str(e.orig) if hasattr(e, 'orig') else "Unknown error"
+        if 'username' in error_msg.lower():
+            raise HTTPException(status_code=400, detail="Username already exists")
+        elif 'email' in error_msg.lower():
+            raise HTTPException(status_code=400, detail="Email already exists")
+        elif 'employee_id' in error_msg.lower():
+            raise HTTPException(status_code=400, detail="Employee ID already exists")
+        else:
+            raise HTTPException(status_code=400, detail="Username, email, or employee ID already exists")
 
     return user
 
 
 @app.get("/users", response_model=list[schemas.UserPublic])
 def list_users(db: Session = Depends(get_db)):
-    users = db.query(models.User).order_by(models.User.id.desc()).all()
-    return users
+    # Ensure employee_id column exists
+    ensure_employee_id_column(db)
+    # Use raw SQL to handle employee_id column safely
+    try:
+        users_result = db.execute(text("""
+            SELECT id, username, password_hash, role, email, employee_id, created_at
+            FROM public.users
+            ORDER BY id DESC
+        """)).mappings().all()
+        users = []
+        for u in users_result:
+            user = models.User(
+                id=u["id"],
+                username=u["username"],
+                password_hash=u["password_hash"],
+                role=u["role"],
+                email=u["email"],
+                employee_id=u.get("employee_id"),
+                created_at=u["created_at"]
+            )
+            users.append(user)
+        return users
+    except Exception:
+        # Fallback to ORM if raw SQL fails
+        users = db.query(models.User).order_by(models.User.id.desc()).all()
+        return users
 
 
 @app.get("/users/{user_id}", response_model=schemas.UserPublic)
 def get_user(user_id: int, db: Session = Depends(get_db)):
+    # Ensure employee_id column exists
+    ensure_employee_id_column(db)
+    # Use raw SQL to avoid ORM issues if column was just created
+    try:
+        user_result = db.execute(text("""
+            SELECT id, username, password_hash, role, email, employee_id, created_at
+            FROM public.users
+            WHERE id = :user_id
+            LIMIT 1
+        """), {"user_id": user_id}).mappings().first()
+        if not user_result:
+            raise HTTPException(status_code=404, detail="User not found")
+        # Convert to User object
+        user = models.User(
+            id=user_result["id"],
+            username=user_result["username"],
+            password_hash=user_result["password_hash"],
+            role=user_result["role"],
+            email=user_result["email"],
+            employee_id=user_result.get("employee_id"),
+            created_at=user_result["created_at"]
+        )
+        return user
+    except Exception:
+        # Fallback to ORM query
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return user
+
+
+@app.put("/users/{user_id}", response_model=schemas.UserPublic)
+def update_user(user_id: int, payload: schemas.UpdateUserRequest, db: Session = Depends(get_db)):
+    # Ensure employee_id column exists
+    ensure_employee_id_column(db)
+    
+    # Get existing user
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    return user
+    
+    # Build update fields
+    update_fields = []
+    params = {"user_id": user_id}
+    
+    if payload.username is not None:
+        update_fields.append("username = :username")
+        params["username"] = payload.username.strip()
+    
+    if payload.email is not None:
+        update_fields.append("email = :email")
+        params["email"] = payload.email.strip()
+    
+    if payload.role is not None:
+        role = payload.role.lower()
+        if role not in ("admin", "operator"):
+            raise HTTPException(status_code=400, detail="Role must be 'admin' or 'operator'")
+        update_fields.append("role = :role")
+        params["role"] = role
+    
+    if payload.employee_id is not None:
+        employee_id_val = payload.employee_id.strip() if payload.employee_id else None
+        if employee_id_val and len(employee_id_val) == 0:
+            employee_id_val = None
+        update_fields.append("employee_id = :employee_id")
+        params["employee_id"] = employee_id_val
+    
+    if not update_fields:
+        # No fields to update
+        return user
+    
+    # Build SQL update query
+    sql_update = "UPDATE public.users SET " + ", ".join(update_fields) + " WHERE id = :user_id RETURNING id, username, email, role, employee_id, created_at"
+    
+    try:
+        result = db.execute(text(sql_update), params).mappings().first()
+        db.commit()
+        
+        # Reload user to get updated data
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found after update")
+        
+        return user
+    except IntegrityError as e:
+        db.rollback()
+        error_msg = str(e.orig) if hasattr(e, 'orig') else "Unknown error"
+        if 'username' in error_msg.lower():
+            raise HTTPException(status_code=400, detail="Username already exists")
+        elif 'email' in error_msg.lower():
+            raise HTTPException(status_code=400, detail="Email already exists")
+        elif 'employee_id' in error_msg.lower():
+            raise HTTPException(status_code=400, detail="Employee ID already exists")
+        else:
+            raise HTTPException(status_code=400, detail="Update failed: duplicate value")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update user: {str(e)}")
 
 
 @app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -863,6 +1068,7 @@ def list_gauge_tracks(limit: int = 100, offset: int = 0, requested_by: str | Non
     # Build rows by joining equipment for display and current holder from existing gauge_tracker
     # Ensure return columns exist for consistent SELECT
     try:
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS purpose TEXT"))
         db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_by VARCHAR(100)"))
         db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
         db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS return_status VARCHAR(50)"))
@@ -891,6 +1097,7 @@ def list_gauge_tracks(limit: int = 100, offset: int = 0, requested_by: str | Non
           CASE WHEN gt.issued_to IS NOT NULL AND gt.returned_at IS NULL THEN gt.issued_at ELSE gr.accepted_at END AS accepted_at,
           gr.returned_by,
           gr.returned_at,
+          gr.purpose,
           gr.return_status,
           gr.return_remarks
         FROM public.gauge_requests gr
@@ -922,8 +1129,9 @@ def create_gauge_track(payload: schemas.GaugeTrackCreate, db: Session = Depends(
         )
         """
     ))
-    # Ensure returned_at column exists before we query on it
+    # Ensure purpose and returned_at columns exist before we query on it
     try:
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS purpose TEXT"))
         db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
     except Exception:
         pass
@@ -942,11 +1150,11 @@ def create_gauge_track(payload: schemas.GaugeTrackCreate, db: Session = Depends(
     rec = db.execute(
         text(
             """
-            INSERT INTO public.gauge_requests (gauge_id, requested_by, requested_at, status)
-            VALUES (:gauge_id, :requested_by, NOW(), 'requested')
+            INSERT INTO public.gauge_requests (gauge_id, requested_by, requested_at, status, purpose)
+            VALUES (:gauge_id, :requested_by, NOW(), 'requested', :purpose)
             RETURNING id
         """
-    ), data).mappings().first()
+        ), data).mappings().first()
     if not rec:
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to create request")
@@ -966,7 +1174,8 @@ def create_gauge_track(payload: schemas.GaugeTrackCreate, db: Session = Depends(
           gr.requested_at,
           gr.status,
           NULL::varchar as accepted_by,
-          NULL::timestamptz as accepted_at
+          NULL::timestamptz as accepted_at,
+          gr.purpose
         FROM public.gauge_requests gr
         LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gr.gauge_id
         WHERE gr.id = :id
@@ -1478,19 +1687,28 @@ def return_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Ses
     # Normalize and validate return status and remarks
     rs = (payload.return_status or "").strip()
     rr = (payload.return_remarks or "").strip()
-    # Map common typos/cases
-    rs_lower = rs.lower()
-    if rs_lower in ("good condition", "good", "ok", "okay"):
-        rs = "Good Condition"
-    elif rs_lower in ("needs maintenance", "needs maintainance", "needs maintainace", "maintenance", "maintainance"):
-        rs = "Needs maintenance"
-    elif rs_lower in ("damaged", "broken"):
-        rs = "Damaged"
-    elif not rs:
+    # Map common typos/cases to standard values: Good, Bad, Needs Repair, or Custom
+    rs_lower = rs.lower() if rs else ""
+    if rs_lower in ("good condition", "good", "ok", "okay", "fine"):
+        rs = "Good"
+    elif rs_lower in ("bad", "damaged", "broken", "poor condition"):
+        rs = "Bad"
+    elif rs_lower in ("needs repair", "needs maintenance", "needs maintainance", "needs maintainace", "maintenance", "maintainance", "repair needed"):
+        rs = "Needs Repair"
+    elif rs_lower in ("custom", "other"):
+        rs = "Custom"
+    elif rs:
+        # If it's not one of the standard values but provided, treat as Custom
+        rs = "Custom"
+    else:
         rs = None
-    # Enforce remarks when needed
-    if rs in ("Needs maintenance", "Damaged") and not rr:
-        raise HTTPException(status_code=400, detail="Remarks are required for 'Needs maintenance' or 'Damaged'")
+    # If return_status is Custom or empty but remarks provided, set as Custom
+    if not rs and rr:
+        rs = "Custom"
+    # Enforce remarks for Bad or Needs Repair
+    if rs in ("Bad", "Needs Repair") and not rr:
+        raise HTTPException(status_code=400, detail="Remarks are required for 'Bad' or 'Needs Repair' condition")
+    # If Custom is selected, remarks are optional but recommended
 
     db.execute(text(
         """
