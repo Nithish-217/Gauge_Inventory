@@ -11,11 +11,13 @@ export default function OperatorGaugeTracker() {
   const [currentPage, setCurrentPage] = useState(1)
   const [totalItems, setTotalItems] = useState(0)
   const [pageSize, setPageSize] = useState(10)
+  const [sortBy, setSortBy] = useState(null)
+  const [sortDir, setSortDir] = useState(null)
   const scrollRef = useRef(null)
   const username = (()=>{ try { return localStorage.getItem('username') || '' } catch { return '' } })()
   const [filterOpen, setFilterOpen] = useState(false)
   const [statusFilter, setStatusFilter] = useState(undefined)
-  const [dateFilter, setDateFilter] = useState(null)
+  const [dateFilter, setDateFilter] = useState(null) // [dayjs, dayjs]
   const [returnModalOpen, setReturnModalOpen] = useState(false)
   const [returnModalRow, setReturnModalRow] = useState(null)
   const [returnCondition, setReturnCondition] = useState('Good')
@@ -28,11 +30,19 @@ export default function OperatorGaugeTracker() {
     try {
       const cur = typeof opts.page === 'number' ? opts.page : (currentPage - 1)
       const params = new URLSearchParams({ requested_by: username, limit: String(limit), offset: String(cur * limit) })
+      if (sortBy) params.set('sort_by', sortBy)
+      if (sortDir) params.set('sort_dir', sortDir)
+      if (Array.isArray(dateFilter) && dateFilter[0] && dateFilter[1]) {
+        params.set('from_date', dateFilter[0].format('YYYY-MM-DD'))
+        params.set('to_date', dateFilter[1].format('YYYY-MM-DD'))
+      }
       const res = await fetch(`/gauge-tracker?${params.toString()}`)
       if (!res.ok) throw new Error(await res.text() || 'Failed to load')
       const data = await res.json()
       const batch = Array.isArray(data) ? data.map(r=>({ ...r, key: r.id })) : []
-      setTotalItems(batch.length) // Note: This API doesn't return total count, using current batch length
+      const hdr = res.headers ? res.headers.get('X-Total-Count') : null
+      const total = hdr ? Number(hdr) : batch.length
+      setTotalItems(Number.isFinite(total) ? total : batch.length)
       setRows(batch)
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Failed to load')
@@ -41,7 +51,7 @@ export default function OperatorGaugeTracker() {
     }
   }
 
-  useEffect(() => { fetchRows({ page: currentPage - 1 }) }, [username, currentPage, pageSize])
+  useEffect(() => { fetchRows({ page: currentPage - 1 }) }, [username, currentPage, pageSize, sortBy, sortDir, dateFilter])
 
   const onReturn = (row) => {
     // Open return modal first
@@ -89,7 +99,7 @@ export default function OperatorGaugeTracker() {
       key: 'id', 
       width: 80, 
       align: 'center',
-      sorter: (a,b) => a.id - b.id
+      sorter: true
     },
     { 
       title: 'Equipment', 
@@ -97,7 +107,7 @@ export default function OperatorGaugeTracker() {
       key: 'name_of_the_equipment', 
       width: 200, 
       ellipsis: true,
-      sorter: (a,b) => String(a.name_of_the_equipment||'').localeCompare(String(b.name_of_the_equipment||''))
+      sorter: true
     },
     { 
       title: 'IDFN', 
@@ -106,7 +116,7 @@ export default function OperatorGaugeTracker() {
       width: 120, 
       align: 'center',
       ellipsis: true,
-      sorter: (a,b) => String(a.idfn_no||'').localeCompare(String(b.idfn_no||'')),
+      sorter: true,
       render: (text) => text ? <span className="idfn-tag">{text}</span> : ''
     },
     { 
@@ -115,6 +125,7 @@ export default function OperatorGaugeTracker() {
       key: 'status', 
       width: 120, 
       align: 'center',
+      sorter: true,
       render:(v)=> {
         const status = (v||'').toLowerCase()
         const color = status === 'accepted' ? 'green' : status === 'rejected' ? 'red' : status === 'returned' ? 'blue' : 'orange'
@@ -216,12 +227,17 @@ export default function OperatorGaugeTracker() {
   const filteredRows = useMemo(() => {
     return rows.filter(r => {
       const sOk = statusFilter ? String(r.status||'').toLowerCase() === String(statusFilter).toLowerCase() : true
-      const dOk = dateFilter ? (()=>{
-        try {
-          const dt = r.requested_at ? dayjs(r.requested_at) : null
-          return dt ? dt.isSame(dateFilter, 'day') : false
-        } catch { return false }
-      })() : true
+      const dOk = Array.isArray(dateFilter) && dateFilter[0] && dateFilter[1]
+        ? (() => {
+            try {
+              const dt = r.requested_at ? dayjs(r.requested_at) : null
+              if (!dt) return false
+              const fromOk = dt.isSame(dateFilter[0], 'day') || dt.isAfter(dateFilter[0], 'day')
+              const toOk = dt.isSame(dateFilter[1], 'day') || dt.isBefore(dateFilter[1], 'day')
+              return fromOk && toOk
+            } catch { return false }
+          })()
+        : true
       return sOk && dOk
     })
   }, [rows, statusFilter, dateFilter])
@@ -266,17 +282,27 @@ export default function OperatorGaugeTracker() {
                     />
                   </div>
                   <div>
-                    <div style={{fontSize:12, color:'#666'}}>Date</div>
-                    <DatePicker
-                      allowClear
-                      value={dateFilter}
-                      onChange={(d)=>setDateFilter(d)}
-                      style={{ width: '100%' }}
-                    />
+                    <div style={{fontSize:12, color:'#666'}}>Requested date range</div>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <DatePicker
+                        style={{ width: '50%' }}
+                        placeholder="From date"
+                        value={Array.isArray(dateFilter) ? dateFilter[0] : null}
+                        onChange={(d)=> setDateFilter(d ? [d, Array.isArray(dateFilter)? dateFilter[1] : null] : (Array.isArray(dateFilter)? [null, dateFilter[1]] : null))}
+                        allowClear
+                      />
+                      <DatePicker
+                        style={{ width: '50%' }}
+                        placeholder="To date"
+                        value={Array.isArray(dateFilter) ? dateFilter[1] : null}
+                        onChange={(d)=> setDateFilter(d ? [Array.isArray(dateFilter)? dateFilter[0] : null, d] : (Array.isArray(dateFilter)? [dateFilter[0], null] : null))}
+                        allowClear
+                      />
+                    </Space.Compact>
                   </div>
                   <div style={{display:'flex', justifyContent:'flex-end', gap:8}}>
                     <Button onClick={()=>{ setStatusFilter(undefined); setDateFilter(null) }}>Clear</Button>
-                    <Button type="primary" onClick={()=>setFilterOpen(false)}>Apply</Button>
+                    <Button type="primary" onClick={()=>{ setCurrentPage(1); fetchRows({ page: 0 }); setFilterOpen(false) }}>Apply</Button>
                   </div>
                 </div>
               )}
@@ -300,6 +326,15 @@ export default function OperatorGaugeTracker() {
             className="ant-table-striped professional-table"
             rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
             scroll={{ x: 1000 }}
+            onChange={(_, __, sorter) => {
+              const s = Array.isArray(sorter) ? sorter[0] : sorter
+              const field = s && s.field ? s.field : null
+              const order = s && s.order ? (s.order === 'descend' ? 'desc' : 'asc') : null
+              setSortBy(field)
+              setSortDir(order)
+              setCurrentPage(1)
+              fetchRows({ page: 0 })
+            }}
           />
         </div>
 

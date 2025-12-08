@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi import Request
+from fastapi import Request, Response, Header
+
 from fastapi import UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -13,17 +14,31 @@ from barcode.writer import ImageWriter
 import qrcode
 
 from .database import get_db
+from .database import SessionLocal
 from . import models, schemas
 from .security import verify_password, get_password_hash
 import os
 from minio import Minio
 from datetime import datetime as dt
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+import threading
+import time
 import smtplib
 import ssl
 from email.message import EmailMessage
 from dotenv import load_dotenv
 from fastapi.responses import StreamingResponse, RedirectResponse
 from .storage import MinioStorage
+from scripts import due_reminder as due_reminder_script
+import json
+import urllib.request
+import urllib.error
+import uuid
+import csv
+import io as _io
+import re
+import calendar
 
 app = FastAPI(title="CMTI Backend", version="0.1.0")
 
@@ -424,6 +439,56 @@ def free_all_tools(db: Session = Depends(get_db)):
         ))
     except Exception:
         pass
+    # Ensure ranges table exists for subselects
+    try:
+        db.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS public.gauge_ranges (
+              id SERIAL PRIMARY KEY,
+              gauge_id INTEGER NOT NULL,
+              label TEXT NOT NULL
+            )
+            """
+        ))
+    except Exception:
+        pass
+    # Ensure equipment table exists for joins
+    try:
+        db.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS public.equipment_used_for_calibration (
+              gauge_id SERIAL PRIMARY KEY,
+              name_of_the_equipment TEXT NOT NULL,
+              location TEXT,
+              receipt_date DATE,
+              make_model TEXT,
+              idfn_no TEXT NOT NULL,
+              overall_measurement_uncertainty TEXT,
+              calibration_freq_months INTEGER,
+              date_of_last_calibration DATE,
+              calibration_due DATE,
+              pcr_number BIGINT
+            )
+            """
+        ))
+    except Exception:
+        pass
+    # Ensure users table exists for joins
+    try:
+        db.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS public.users (
+              id SERIAL PRIMARY KEY,
+              username VARCHAR(50) UNIQUE NOT NULL,
+              email VARCHAR(255),
+              password_hash TEXT,
+              role VARCHAR(20) DEFAULT 'operator',
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        ))
+    except Exception:
+        pass
 
     # Update gauge_requests
     res1 = None
@@ -462,14 +527,166 @@ def free_all_tools(db: Session = Depends(get_db)):
 # Email Reminders
 # =========================
 
+def _send_operator_email_for_gauge(db: Session, gid: int, admin_name: str) -> tuple[bool, str]:
+    """Internal: send reminder email for a gauge to its current operator holder.
+    Returns (success, message)."""
+    # Find active holder from primary gauge_requests
+    row = db.execute(text(
+        """
+        SELECT gr.requested_by, gr.accepted_by, e.name_of_the_equipment, e.calibration_due
+        FROM public.gauge_requests gr
+        LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gr.gauge_id
+        WHERE gr.gauge_id = :gid AND gr.status = 'accepted' AND gr.returned_at IS NULL
+        ORDER BY gr.accepted_at DESC NULLS LAST
+        LIMIT 1
+        """
+    ), {"gid": gid}).mappings().first()
+    operator_username = ""
+    if row:
+        # Prefer the requester (operator) as the responsible person, not the admin who accepted
+        operator_username = (row.get("requested_by") or "").strip() or (row.get("accepted_by") or "").strip()
+
+    # If no active holder in gauge_requests, fallback to legacy gauge_tracker current holder
+    user = None
+    if operator_username:
+        user = db.execute(text(
+            """
+            SELECT email, username FROM public.users
+            WHERE TRIM(LOWER(username)) = TRIM(LOWER(:u))
+            LIMIT 1
+            """
+        ), {"u": operator_username}).mappings().first()
+
+    if not user:
+        gt_holder = db.execute(text(
+            """
+            SELECT u.email, u.username, e.name_of_the_equipment, e.calibration_due
+            FROM public.gauge_tracker gt
+            LEFT JOIN public.users u ON u.id = gt.issued_to
+            LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gt.gauge_id
+            WHERE gt.gauge_id = :gid AND gt.returned_at IS NULL
+            ORDER BY gt.issued_at DESC NULLS LAST
+            LIMIT 1
+            """
+        ), {"gid": gid}).mappings().first()
+        if gt_holder and gt_holder.get("email"):
+            user = {"email": gt_holder.get("email"), "username": gt_holder.get("username")}
+            if not row:
+                row = {"name_of_the_equipment": gt_holder.get("name_of_the_equipment"), "calibration_due": gt_holder.get("calibration_due")}
+
+    if not user or not user.get("email"):
+        return False, "Operator email not found"
+
+    try:
+        load_dotenv(override=False)
+    except Exception:
+        pass
+    smtp_host = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("EMAIL_PORT", "587"))
+    smtp_user = os.getenv("EMAIL_USER")
+    smtp_pass = os.getenv("EMAIL_PASS")
+    email_from = os.getenv("EMAIL_FROM", smtp_user or "")
+    if not smtp_user or not smtp_pass or not email_from:
+        return False, "Email credentials are not configured"
+
+    operator_email = user["email"]
+    if not operator_username:
+        try:
+            operator_username = (user.get("username") or "").strip()
+        except Exception:
+            operator_username = ""
+    gauge_name = row.get("name_of_the_equipment") or f"Gauge {gid}"
+    due_date = row.get("calibration_due")
+    try:
+        if due_date is not None:
+            try:
+                due_str = due_date.strftime("%Y-%m-%d")
+            except Exception:
+                due_str = str(due_date)
+        else:
+            due_str = "—"
+    except Exception:
+        due_str = str(due_date)
+
+    subject = "Gauge Calibration Reminder"
+    body = (
+        f"Dear {operator_username},\n\n"
+        f"This is a reminder to return the gauge {gauge_name} (ID: {gid}) before its due date: {due_str}.\n\n"
+        f"Regards,\n"
+        f"{admin_name}"
+    )
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = email_from
+    msg["To"] = operator_email
+    msg.set_content(body)
+
+    # Ensure email_logs table exists and define logger
+    def _ensure_email_logs_table(_db: Session):
+        try:
+            _db.execute(text(
+                """
+                CREATE TABLE IF NOT EXISTS public.email_logs (
+                  id SERIAL PRIMARY KEY,
+                  sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                  to_email TEXT,
+                  subject TEXT,
+                  body TEXT,
+                  status TEXT,
+                  error TEXT,
+                  context JSONB
+                )
+                """
+            ))
+        except Exception:
+            pass
+
+    def _log_email(_db: Session, to_email: str, subject: str, body: str, status: str, error: str | None, context_dict: dict | None = None):
+        try:
+            _ensure_email_logs_table(_db)
+            _db.execute(text(
+                """
+                INSERT INTO public.email_logs (to_email, subject, body, status, error, context)
+                VALUES (:to_email, :subject, :body, :status, :error, CAST(:context AS JSONB))
+                """
+            ), {
+                "to_email": to_email,
+                "subject": subject,
+                "body": body,
+                "status": status,
+                "error": (error or None),
+                "context": json.dumps(context_dict) if context_dict is not None else None,
+            })
+            _db.commit()
+        except Exception:
+            try:
+                _db.rollback()
+            except Exception:
+                pass
+
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+            server.ehlo()
+            server.starttls(context=context)
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+        _log_email(db, operator_email, subject, body, "sent", None, {"source": "_send_operator_email_for_gauge", "gauge_id": gid})
+        return True, "Reminder email sent"
+    except Exception as e:
+        _log_email(db, operator_email, subject, body, "failed", str(e), {"source": "_send_operator_email_for_gauge", "gauge_id": gid})
+        return False, f"Failed to send email: {str(e)}"
+
+
 @app.post("/reminders/email", response_model=schemas.ReminderResponse)
 def send_gauge_reminder(payload: schemas.ReminderRequest, db: Session = Depends(get_db)):
-    """Send an email reminder to the operator currently holding the gauge.
-    - Finds the active gauge request (status 'accepted' and not returned) for the gauge_id
-    - Looks up the operator's email from users table using accepted_by username
-    - Composes and sends an email using SMTP credentials from environment variables
-    """
+    """Send an email reminder to the operator currently holding the gauge."""
     gid = int(payload.gauge_id)
+    ok, msg = _send_operator_email_for_gauge(db, gid, payload.admin_name)
+    if not ok:
+        raise HTTPException(status_code=500, detail=msg)
+    return {"success": True, "message": msg}
     # Find active holder from primary gauge_requests
     row = db.execute(text(
         """
@@ -579,7 +796,28 @@ def send_gauge_reminder(payload: schemas.ReminderRequest, db: Session = Depends(
 
 
 @app.get("/equipment")
-def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: Session = Depends(get_db)):
+def list_equipment(
+    limit: int = 50,
+    offset: int = 0,
+    q: str | None = None,
+    location: str | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
+    db: Session = Depends(get_db),
+):
+    # Ensure ranges table exists
+    try:
+        db.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS public.gauge_ranges (
+              id SERIAL PRIMARY KEY,
+              gauge_id INTEGER NOT NULL,
+              label TEXT NOT NULL
+            )
+            """
+        ))
+    except Exception:
+        pass
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
     where = ""
@@ -587,11 +825,37 @@ def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: S
     if q:
         where = "WHERE name_of_the_equipment ILIKE :qs OR idfn_no ILIKE :qs OR location ILIKE :qs"
         params["qs"] = f"%{q}%"
+    if location:
+        # Case-insensitive exact match for chosen location
+        clause = "LOWER(location) = LOWER(:loc)"
+        if where:
+            where += f" AND {clause}"
+        else:
+            where = f"WHERE {clause}"
+        params["loc"] = location
     # Ensure returned_at column exists for availability checks
     try:
         db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
     except Exception:
         pass
+    # Sorting
+    allowed_cols = {
+        "gauge_id": "gauge_id",
+        "name": "name_of_the_equipment",
+        "name_of_the_equipment": "name_of_the_equipment",
+        "location": "location",
+        "make_model": "make_model",
+        "idfn_no": "idfn_no",
+        "receipt_date": "receipt_date",
+        "date_of_last_calibration": "date_of_last_calibration",
+        "calibration_due": "calibration_due",
+        "calibration_freq_months": "calibration_freq_months",
+        "pcr_number": "pcr_number",
+    }
+    col = allowed_cols.get((sort_by or "").lower(), "gauge_id")
+    direction = "DESC" if (sort_dir or "").lower() == "desc" else "ASC"
+    order_clause = f"{col} {direction}"
+
     sql = text(
         f"""
         SELECT 
@@ -606,6 +870,13 @@ def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: S
           calibration_freq_months,
           overall_measurement_uncertainty,
           pcr_number,
+          (
+            SELECT ARRAY(
+              SELECT gr.label FROM public.gauge_ranges gr
+              WHERE gr.gauge_id = equipment_used_for_calibration.gauge_id
+              ORDER BY gr.label ASC
+            )
+          ) AS ranges,
           EXISTS (
             SELECT 1 FROM public.gauge_requests gr
             WHERE gr.gauge_id = equipment_used_for_calibration.gauge_id
@@ -614,17 +885,458 @@ def list_equipment(limit: int = 50, offset: int = 0, q: str | None = None, db: S
           ) AS is_unavailable
         FROM public.equipment_used_for_calibration
         {where}
-        ORDER BY gauge_id
+        ORDER BY {order_clause}
         LIMIT :limit OFFSET :offset
         """
     )
-    rows = db.execute(sql, params).mappings().all()
+    try:
+        rows = db.execute(sql, params).mappings().all()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"gauge-tracker primary query failed: {str(e)}")
+    # Compute total with same filter
+    try:
+        count_sql = text(
+            f"""
+            SELECT COUNT(1) AS total
+            FROM public.equipment_used_for_calibration
+            {where}
+            """
+        )
+        count_params = {}
+        if "qs" in params:
+            count_params["qs"] = params["qs"]
+        if "loc" in params:
+            count_params["loc"] = params["loc"]
+        total_row = db.execute(count_sql, count_params).mappings().first()
+        total = int(total_row["total"]) if total_row and total_row.get("total") is not None else len(rows)
+    except Exception:
+        total = len(rows)
     return {
         "items": list(rows),
         "limit": limit,
         "offset": offset,
         "count": len(rows),
+        "total": total,
     }
+
+
+@app.get("/equipment/suggest")
+def suggest_equipment(q: str, limit: int = 10, db: Session = Depends(get_db)):
+    """Return up to `limit` suggestions matching q across name_of_the_equipment and idfn_no.
+    The response is a list of objects: { type: 'name'|'idfn', value: string }.
+    """
+    try:
+        limit = max(1, min(int(limit), 25))
+    except Exception:
+        limit = 10
+    qpat = f"%{q}%" if q is not None else "%"
+    suggestions: list[dict[str, str]] = []
+    # Names
+    try:
+        sql_names = text(
+            """
+            SELECT DISTINCT name_of_the_equipment AS v
+            FROM public.equipment_used_for_calibration
+            WHERE name_of_the_equipment IS NOT NULL AND name_of_the_equipment ILIKE :q
+            ORDER BY name_of_the_equipment ASC
+            LIMIT :lim
+            """
+        )
+        for row in db.execute(sql_names, {"q": qpat, "lim": limit}).mappings().all():
+            val = row.get("v")
+            if val:
+                suggestions.append({"type": "name", "value": str(val)})
+    except Exception:
+        pass
+    # IDFN
+    try:
+        sql_idfn = text(
+            """
+            SELECT DISTINCT idfn_no AS v
+            FROM public.equipment_used_for_calibration
+            WHERE idfn_no IS NOT NULL AND idfn_no ILIKE :q
+            ORDER BY idfn_no ASC
+            LIMIT :lim
+            """
+        )
+        for row in db.execute(sql_idfn, {"q": qpat, "lim": limit}).mappings().all():
+            val = row.get("v")
+            if val:
+                suggestions.append({"type": "idfn", "value": str(val)})
+    except Exception:
+        pass
+    # Trim to limit while preserving ordering: prioritize names then idfn; remove duplicates
+    seen = set()
+    out = []
+    for s in suggestions:
+        key = (s.get("type"), s.get("value"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+        if len(out) >= limit:
+            break
+    return out
+
+
+@app.get("/equipment/location-suggest")
+def suggest_locations(q: str | None = None, limit: int = 20, db: Session = Depends(get_db)):
+    """Return a list of distinct locations matching optional q (case-insensitive)."""
+    try:
+        limit = max(1, min(int(limit), 50))
+    except Exception:
+        limit = 20
+    params: dict[str, object] = {"lim": limit}
+    where = "WHERE location IS NOT NULL AND TRIM(location) <> ''"
+    if q:
+        where += " AND location ILIKE :q"
+        params["q"] = f"%{q}%"
+    sql = text(
+        f"""
+        SELECT DISTINCT location AS v
+        FROM public.equipment_used_for_calibration
+        {where}
+        ORDER BY location ASC
+        LIMIT :lim
+        """
+    )
+    try:
+        rows = db.execute(sql, params).mappings().all()
+        return [str(r.get("v")) for r in rows if r.get("v")]
+    except Exception:
+        return []
+
+
+@app.get("/equipment/position-by-name")
+def equipment_position_by_name(
+    name: str,
+    gauge_id: int | None = None,
+    q: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Return zero-based index position of an equipment in name ASC order.
+    Tie-break by gauge_id when names are equal.
+    Supports same optional q filter as list_equipment.
+    """
+    where = ""
+    params: dict[str, object] = {"nm": name}
+    if q:
+        where = "WHERE (name_of_the_equipment ILIKE :qs OR idfn_no ILIKE :qs OR location ILIKE :qs)"
+        params["qs"] = f"%{q}%"
+    # Count rows that come strictly before in lex order, or equal name with smaller gauge_id (if provided)
+    cond_equal_tiebreak = "0=1"
+    if gauge_id is not None:
+        params["gid"] = int(gauge_id)
+        cond_equal_tiebreak = "(LOWER(name_of_the_equipment) = LOWER(:nm) AND gauge_id < :gid)"
+    sql = text(
+        f"""
+        SELECT COUNT(1) AS idx
+        FROM public.equipment_used_for_calibration
+        {where}
+        AND (
+          LOWER(name_of_the_equipment) < LOWER(:nm)
+          OR {cond_equal_tiebreak}
+        )
+        """
+        if where
+        else
+        """
+        SELECT COUNT(1) AS idx
+        FROM public.equipment_used_for_calibration
+        WHERE LOWER(name_of_the_equipment) < LOWER(:nm)
+        OR (LOWER(name_of_the_equipment) = LOWER(:nm) AND gauge_id < :gid)
+        """
+    )
+    try:
+        row = db.execute(sql, params).mappings().first()
+        idx = int(row["idx"]) if row and row.get("idx") is not None else 0
+        return {"index": idx}
+    except Exception:
+        return {"index": 0}
+
+
+# =========================
+# Daily 9:00 AM IST Email Scheduler
+# =========================
+
+def _seconds_until_next_9am_ist() -> float:
+    tz = ZoneInfo("Asia/Kolkata")
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc.astimezone(tz)
+    target = now_ist.replace(hour=8, minute=14, second=00, microsecond=0)
+    if now_ist >= target:
+        target = target + timedelta(days=1)
+    delta = target - now_ist
+    return max(1.0, delta.total_seconds())
+
+
+def _daily_email_job():
+    # Open a fresh DB session
+    db = SessionLocal()
+    try:
+        # Pick an admin display name from env or fallback
+        admin_name = os.getenv("ADMIN_DISPLAY_NAME", "Admin")
+        # Find all currently accepted and not returned gauges (primary table)
+        rows = db.execute(text(
+            """
+            SELECT DISTINCT gr.gauge_id
+            FROM public.gauge_requests gr
+            WHERE gr.status = 'accepted' AND gr.returned_at IS NULL
+            """
+        )).mappings().all()
+        gids = [int(r["gauge_id"]) for r in rows if r.get("gauge_id") is not None]
+        sent = 0
+        for gid in gids:
+            ok, _ = _send_operator_email_for_gauge(db, gid, admin_name)
+            if ok:
+                sent += 1
+        print(f"[scheduler] Daily email job completed. Sent: {sent}, Checked: {len(gids)}")
+    except Exception as e:
+        print(f"[scheduler] Daily email job failed: {e}")
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _scheduler_loop():
+    # Run forever while process is alive
+    while True:
+        try:
+            wait_s = _seconds_until_next_9am_ist()
+            time.sleep(wait_s)
+            _daily_email_job()
+        except Exception as e:
+            # Never crash the loop
+            print(f"[scheduler] Loop error: {e}")
+            time.sleep(5)
+
+
+@app.on_event("startup")
+def _start_scheduler():
+    try:
+        t = threading.Thread(target=_scheduler_loop, name="email-scheduler", daemon=True)
+        t.start()
+        print("[scheduler] Daily 9:00 AM IST email scheduler started")
+    except Exception as e:
+        print(f"[scheduler] Failed to start: {e}")
+
+
+_due_reminder_time_str = os.getenv("DUE_REMINDER_TIME", "09:11")
+_due_reminder_event = threading.Event()
+
+
+def _parse_hhmm(s: str) -> tuple[int, int]:
+    p = (s or "").strip()
+    if ":" not in p or len(p) < 4:
+        raise ValueError("Invalid time")
+    hh, mm = p.split(":", 1)
+    h = int(hh)
+    m = int(mm)
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise ValueError("Invalid time")
+    return h, m
+
+
+def _seconds_until_next_time_ist(h: int, m: int) -> float:
+    tz = ZoneInfo("Asia/Kolkata")
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc.astimezone(tz)
+    target = now_ist.replace(hour=h, minute=m, second=0, microsecond=0)
+    if now_ist >= target:
+        target = target + timedelta(days=1)
+    delta = target - now_ist
+    return max(1.0, delta.total_seconds())
+
+
+def _trigger_due_reminder():
+    url = os.getenv("DUE_REMINDER_TRIGGER_URL", "").strip()
+    if url:
+        try:
+            data = b"{}"
+            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                print(f"[due-reminder] HTTP trigger {url} -> {resp.status}")
+        except Exception as e:
+            print(f"[due-reminder] HTTP trigger failed: {e}")
+    else:
+        # Direct in-process run
+        due_reminder_script.main()
+
+
+def _run_due_reminder_job_safely():
+    try:
+        _trigger_due_reminder()
+    except Exception as e:
+        print(f"[due-reminder] job failed: {e}")
+
+
+def _due_reminder_scheduler_loop():
+    global _due_reminder_time_str
+    while True:
+        try:
+            try:
+                h, m = _parse_hhmm(_due_reminder_time_str)
+            except Exception:
+                h, m = (8, 30)
+            wait_s = _seconds_until_next_time_ist(h, m)
+            signaled = _due_reminder_event.wait(wait_s)
+            if signaled:
+                # Reschedule requested; clear event and recompute
+                _due_reminder_event.clear()
+                try:
+                    h, m = _parse_hhmm(_due_reminder_time_str)
+                except Exception:
+                    h, m = (8, 30)
+                wait2 = _seconds_until_next_time_ist(h, m)
+                # If new time has already passed today (wait close to 24h), run immediately
+                if wait2 > 23 * 3600:
+                    print(f"[due-reminder] time updated to past today ({h:02d}:{m:02d}), running now")
+                    _run_due_reminder_job_safely()
+                    continue
+                # If the next run is very soon, sleep briefly then run
+                if wait2 <= 5:
+                    if wait2 > 0:
+                        time.sleep(wait2)
+                    print(f"[due-reminder] time updated; running now at {h:02d}:{m:02d}")
+                    _run_due_reminder_job_safely()
+                    continue
+                # Otherwise loop back to wait for the next schedule
+                continue
+            print(f"[due-reminder] scheduled run at {h:02d}:{m:02d} IST")
+            _run_due_reminder_job_safely()
+        except Exception as e:
+            print(f"[due-reminder] loop error: {e}")
+            time.sleep(5)
+
+
+@app.on_event("startup")
+def _start_due_reminder_scheduler():
+    try:
+        t = threading.Thread(target=_due_reminder_scheduler_loop, name="due-reminder-scheduler", daemon=True)
+        t.start()
+        print(f"[due-reminder] scheduler started with time {_due_reminder_time_str} IST")
+    except Exception as e:
+        print(f"[due-reminder] failed to start: {e}")
+
+
+@app.get("/admin/due-reminder/time")
+def get_due_reminder_time():
+    return {"time": _due_reminder_time_str, "timezone": "Asia/Kolkata"}
+
+
+@app.get("/admin/email-logs")
+def list_email_logs(
+    limit: int = 50,
+    status: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    db: Session = Depends(get_db),
+):
+    try:
+        limit = max(1, min(int(limit), 500))
+    except Exception:
+        limit = 50
+    # Ensure table exists
+    try:
+        db.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS public.email_logs (
+              id SERIAL PRIMARY KEY,
+              sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              to_email TEXT,
+              subject TEXT,
+              body TEXT,
+              status TEXT,
+              error TEXT,
+              context JSONB
+            )
+            """
+        ))
+    except Exception:
+        pass
+    where = []
+    params: dict[str, object] = {"lim": limit}
+    if status:
+        where.append("status = :st")
+        params["st"] = status
+    if from_date:
+        where.append("sent_at::date >= CAST(:from_date AS DATE)")
+        params["from_date"] = from_date
+    if to_date:
+        where.append("sent_at::date <= CAST(:to_date AS DATE)")
+        params["to_date"] = to_date
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    rows = db.execute(text(
+        f"""
+        SELECT id, sent_at, to_email, subject, body, status, error, context
+        FROM public.email_logs
+        {where_sql}
+        ORDER BY sent_at DESC, id DESC
+        LIMIT :lim
+        """
+    ), params).mappings().all()
+    # Serialize JSONB context if needed
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            if isinstance(d.get("context"), (dict, list)):
+                pass
+            elif d.get("context") is not None:
+                d["context"] = json.loads(d["context"])  # type: ignore
+        except Exception:
+            pass
+        out.append(d)
+    return out
+
+
+@app.put("/admin/due-reminder/time")
+async def set_due_reminder_time(request: Request, time: str | None = None):
+    global _due_reminder_time_str
+    # Accept time from (priority): JSON body, form body, query param
+    tval = None
+    # Try JSON
+    try:
+        data = await request.json()
+        if isinstance(data, dict):
+            v = data.get("time")
+            if isinstance(v, str) and v.strip():
+                tval = v.strip()
+    except Exception:
+        pass
+    # Try form
+    if not tval:
+        try:
+            form = await request.form()
+            v = form.get("time") if form is not None else None
+            if v:
+                tval = str(v).strip()
+        except Exception:
+            pass
+    # Try query param
+    if not tval and time:
+        tval = str(time).strip()
+
+    if not tval:
+        raise HTTPException(status_code=400, detail="Missing 'time' in body or query")
+    try:
+        h, m = _parse_hhmm(tval)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Time must be in HH:MM 24h format")
+    _due_reminder_time_str = f"{h:02d}:{m:02d}"
+    _due_reminder_event.set()
+    return {"time": _due_reminder_time_str, "timezone": "Asia/Kolkata"}
+
+
+@app.post("/admin/due-reminder/run")
+def run_due_reminder_now():
+    try:
+        due_reminder_script.main()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"due_reminder failed: {e}")
 
 
 @app.post("/equipment", response_model=schemas.EquipmentPublic, status_code=status.HTTP_201_CREATED)
@@ -647,6 +1359,31 @@ def create_equipment(payload: schemas.EquipmentCreate, db: Session = Depends(get
         )
         """
     ))
+    # Ensure legacy gauge_tracker exists for joins/fallback
+    try:
+        db.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS public.gauge_tracker (
+              id SERIAL PRIMARY KEY,
+              gauge_id INTEGER NOT NULL,
+              name_of_the_equipment TEXT,
+              idfn_no TEXT,
+              location TEXT,
+              make_model TEXT,
+              quantity INTEGER DEFAULT 1,
+              requested_by VARCHAR(100),
+              requested_at TIMESTAMPTZ DEFAULT NOW(),
+              status VARCHAR(20) DEFAULT 'requested',
+              accepted_by VARCHAR(100),
+              accepted_at TIMESTAMPTZ,
+              issued_to INTEGER,
+              issued_at TIMESTAMPTZ,
+              returned_at TIMESTAMPTZ
+            )
+            """
+        ))
+    except Exception:
+        pass
 
     # Try to widen existing pcr_number column to BIGINT in case an earlier run created it as INTEGER
     try:
@@ -745,6 +1482,29 @@ def create_equipment(payload: schemas.EquipmentCreate, db: Session = Depends(get
     )
     try:
         row = db.execute(sql, data).mappings().first()
+        if not row:
+            db.rollback()
+            raise HTTPException(status_code=500, detail="Insert failed")
+        # Insert ranges if provided
+        try:
+            db.execute(text(
+                """
+                CREATE TABLE IF NOT EXISTS public.gauge_ranges (
+                  id SERIAL PRIMARY KEY,
+                  gauge_id INTEGER NOT NULL,
+                  label TEXT NOT NULL
+                )
+                """
+            ))
+            ranges = payload.ranges or []
+            if isinstance(ranges, list) and len(ranges):
+                for lab in ranges:
+                    lab_s = (str(lab or "").strip())
+                    if not lab_s:
+                        continue
+                    db.execute(text("INSERT INTO public.gauge_ranges (gauge_id, label) VALUES (:gid, :label)"), {"gid": row["gauge_id"], "label": lab_s})
+        except Exception:
+            pass
         db.commit()
     except IntegrityError as ie:
         db.rollback()
@@ -753,8 +1513,13 @@ def create_equipment(payload: schemas.EquipmentCreate, db: Session = Depends(get
         db.rollback()
         # Return a readable message for common PG errors
         raise HTTPException(status_code=400, detail=f"Insert error: {str(e)}")
-    if not row:
-        raise HTTPException(status_code=500, detail="Insert failed")
+    # Attach ranges to response
+    try:
+        rrows = db.execute(text("SELECT label FROM public.gauge_ranges WHERE gauge_id = :gid ORDER BY label ASC"), {"gid": row["gauge_id"]}).mappings().all()
+        rng = [str(r["label"]) for r in rrows]
+        row = { **row, "ranges": rng }
+    except Exception:
+        pass
     return row
 
 
@@ -858,6 +1623,13 @@ def update_equipment(gauge_id: int, payload: schemas.EquipmentUpdate, db: Sessio
         ), {"gid": gauge_id}).mappings().first()
         if not row:
             raise HTTPException(status_code=404, detail="Gauge not found")
+        # Attach ranges
+        try:
+            rrows = db.execute(text("SELECT label FROM public.gauge_ranges WHERE gauge_id = :gid ORDER BY label ASC"), {"gid": gauge_id}).mappings().all()
+            rng = [str(r["label"]) for r in rrows]
+            row = { **row, "ranges": rng }
+        except Exception:
+            pass
         return row
 
     sql = text(
@@ -873,7 +1645,37 @@ def update_equipment(gauge_id: int, payload: schemas.EquipmentUpdate, db: Sessio
         if not row:
             db.rollback()
             raise HTTPException(status_code=404, detail="Gauge not found")
+        # Update ranges if provided
+        try:
+            db.execute(text(
+                """
+                CREATE TABLE IF NOT EXISTS public.gauge_ranges (
+                  id SERIAL PRIMARY KEY,
+                  gauge_id INTEGER NOT NULL,
+                  label TEXT NOT NULL
+                )
+                """
+            ))
+            if "ranges" in data:
+                # Replace ranges set
+                db.execute(text("DELETE FROM public.gauge_ranges WHERE gauge_id = :gid"), {"gid": gauge_id})
+                rngs = data.get("ranges") or []
+                if isinstance(rngs, list):
+                    for lab in rngs:
+                        lab_s = (str(lab or "").strip())
+                        if not lab_s:
+                            continue
+                        db.execute(text("INSERT INTO public.gauge_ranges (gauge_id, label) VALUES (:gid, :label)"), {"gid": gauge_id, "label": lab_s})
+        except Exception:
+            pass
         db.commit()
+        # Attach ranges
+        try:
+            rrows = db.execute(text("SELECT label FROM public.gauge_ranges WHERE gauge_id = :gid ORDER BY label ASC"), {"gid": gauge_id}).mappings().all()
+            rng = [str(r["label"]) for r in rrows]
+            row = { **row, "ranges": rng }
+        except Exception:
+            pass
         return row
     except IntegrityError:
         db.rollback()
@@ -1048,7 +1850,18 @@ def create_request(payload: schemas.RequestCreate, db: Session = Depends(get_db)
 
 # Gauge Tracker
 @app.get("/gauge-tracker", response_model=list[schemas.GaugeTrackPublic])
-def list_gauge_tracks(limit: int = 100, offset: int = 0, requested_by: str | None = None, db: Session = Depends(get_db)):
+def list_gauge_tracks(
+    limit: int = 100,
+    offset: int = 0,
+    requested_by: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    name: str | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
+    db: Session = Depends(get_db),
+    response: Response = None,
+):
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
     # Requests table to persist operator requests
@@ -1061,7 +1874,12 @@ def list_gauge_tracks(limit: int = 100, offset: int = 0, requested_by: str | Non
           requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           status VARCHAR(20) NOT NULL DEFAULT 'requested',
           accepted_by VARCHAR(100),
-          accepted_at TIMESTAMPTZ
+          accepted_at TIMESTAMPTZ,
+          returned_by VARCHAR(100),
+          returned_at TIMESTAMPTZ,
+          purpose TEXT,
+          return_status VARCHAR(50),
+          return_remarks TEXT
         )
         """
     ))
@@ -1075,11 +1893,42 @@ def list_gauge_tracks(limit: int = 100, offset: int = 0, requested_by: str | Non
         db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS return_remarks TEXT"))
     except Exception:
         pass
-    where = ""
+    where_clauses = []
     params = {"limit": limit, "offset": offset}
     if requested_by:
-        where = "WHERE gr.requested_by ILIKE :rb"
+        where_clauses.append("gr.requested_by ILIKE :rb")
         params["rb"] = requested_by
+    # Date range on requested_at (inclusive)
+    if from_date:
+        where_clauses.append("gr.requested_at::date >= :from_date")
+        params["from_date"] = from_date
+    if to_date:
+        where_clauses.append("gr.requested_at::date <= :to_date")
+        params["to_date"] = to_date
+    # Equipment name contains filter
+    if name:
+        where_clauses.append("e.name_of_the_equipment ILIKE :ename")
+        params["ename"] = f"%{name}%"
+    where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    # Sorting (map to selected fields or COALESCE)
+    gt_allowed = {
+        "id": "gr.id",
+        "gauge_id": "gr.gauge_id",
+        "requested_at": "gr.requested_at",
+        "status": "gr.status",
+        "accepted_at": "COALESCE(gt.issued_at, gr.accepted_at)",
+        "returned_at": "gr.returned_at",
+        "name": "e.name_of_the_equipment",
+        "idfn_no": "e.idfn_no",
+    }
+    if sort_by:
+        gt_col = gt_allowed.get((sort_by or "").lower(), "gr.id")
+        gt_dir = "DESC" if (sort_dir or "").lower() == "desc" else "ASC"
+        gt_order = f"{gt_col} {gt_dir}"
+    else:
+        # Default: most recent first
+        gt_order = "gr.requested_at DESC"
+
     sql = text(
         f"""
         SELECT 
@@ -1099,17 +1948,168 @@ def list_gauge_tracks(limit: int = 100, offset: int = 0, requested_by: str | Non
           gr.returned_at,
           gr.purpose,
           gr.return_status,
-          gr.return_remarks
+          gr.return_remarks,
+          (
+            SELECT ARRAY(
+              SELECT gr2.label FROM public.gauge_ranges gr2
+              WHERE gr2.gauge_id = e.gauge_id
+              ORDER BY gr2.label ASC
+            )
+          ) AS ranges
         FROM public.gauge_requests gr
         LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gr.gauge_id
         LEFT JOIN public.gauge_tracker gt ON gt.gauge_id = gr.gauge_id AND gt.returned_at IS NULL
         LEFT JOIN public.users u ON u.id = gt.issued_to
         {where}
-        ORDER BY gr.id DESC
+        ORDER BY {gt_order}
         LIMIT :limit OFFSET :offset
         """
     )
     rows = db.execute(sql, params).mappings().all()
+    total = None
+    # Expose total via header for client-side pagination (primary source: gauge_requests)
+    try:
+        total_params = {}
+        total_clauses = []
+        join_e = False
+        if requested_by:
+            total_clauses.append("gr.requested_by ILIKE :rb")
+            total_params["rb"] = requested_by
+        if from_date:
+            total_clauses.append("gr.requested_at::date >= :from_date")
+            total_params["from_date"] = from_date
+        if to_date:
+            total_clauses.append("gr.requested_at::date <= :to_date")
+            total_params["to_date"] = to_date
+        if name:
+            total_clauses.append("e.name_of_the_equipment ILIKE :ename")
+            total_params["ename"] = f"%{name}%"
+            join_e = True
+        where_total = ("WHERE " + " AND ".join(total_clauses)) if total_clauses else ""
+        if join_e:
+            total_sql = text(
+                f"""
+                SELECT COUNT(1) AS total
+                FROM public.gauge_requests gr
+                LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gr.gauge_id
+                {where_total}
+                """
+            )
+        else:
+            total_sql = text(
+                f"""
+                SELECT COUNT(1) AS total
+                FROM public.gauge_requests gr
+                {where_total}
+                """
+            )
+        total_row = db.execute(total_sql, total_params).mappings().first()
+        total = int(total_row["total"]) if total_row and total_row.get("total") is not None else len(rows)
+    except Exception:
+        total = len(rows)
+
+    # Fallback: if no rows found in gauge_requests, read from legacy gauge_tracker for visibility
+    if not rows:
+        fb_clauses = []
+        fb_params = {"limit": limit, "offset": offset}
+        if requested_by:
+            fb_clauses.append("gt.requested_by ILIKE :rb")
+            fb_params["rb"] = requested_by
+        if from_date:
+            fb_clauses.append("gt.requested_at::date >= :from_date")
+            fb_params["from_date"] = from_date
+        if to_date:
+            fb_clauses.append("gt.requested_at::date <= :to_date")
+            fb_params["to_date"] = to_date
+        if name:
+            fb_clauses.append("e.name_of_the_equipment ILIKE :ename")
+            fb_params["ename"] = f"%{name}%"
+        fb_where = ("WHERE " + " AND ".join(fb_clauses)) if fb_clauses else ""
+        # Build fallback order by using gt/e columns
+        if sort_by:
+            fb_allowed = {
+                "id": "gt.id",
+                "gauge_id": "gt.gauge_id",
+                "requested_at": "gt.requested_at",
+                "status": "gt.status",
+                "accepted_at": "gt.issued_at",
+                "returned_at": "gt.returned_at",
+                "name": "e.name_of_the_equipment",
+                "idfn_no": "e.idfn_no",
+            }
+            fb_col = fb_allowed.get((sort_by or "").lower(), "gt.requested_at")
+            fb_dir = "DESC" if (sort_dir or "").lower() == "desc" else "ASC"
+            fb_order = f"{fb_col} {fb_dir}"
+        else:
+            fb_order = "gt.requested_at DESC"
+        fb_sql = text(
+            f"""
+            SELECT 
+              gt.id,
+              gt.gauge_id,
+              e.name_of_the_equipment,
+              e.idfn_no,
+              e.location,
+              e.make_model,
+              COALESCE(gt.quantity, 1) AS quantity,
+              gt.requested_by,
+              gt.requested_at,
+              CASE WHEN gt.returned_at IS NOT NULL THEN 'returned' ELSE 'accepted' END AS status,
+              u.username AS accepted_by,
+              gt.issued_at AS accepted_at,
+              NULL::varchar as returned_by,
+              gt.returned_at,
+              NULL::text as purpose,
+              NULL::varchar as return_status,
+              NULL::text as return_remarks,
+              (
+                SELECT ARRAY(
+                  SELECT gr2.label FROM public.gauge_ranges gr2
+                  WHERE gr2.gauge_id = e.gauge_id
+                  ORDER BY gr2.label ASC
+                )
+              ) AS ranges
+            FROM public.gauge_tracker gt
+            LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gt.gauge_id
+            LEFT JOIN public.users u ON u.id = gt.issued_to
+            {fb_where}
+            ORDER BY {fb_order}
+            LIMIT :limit OFFSET :offset
+            """
+        )
+        try:
+            rows = db.execute(fb_sql, fb_params).mappings().all()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"gauge-tracker fallback query failed: {str(e)}")
+        # Fallback total
+        try:
+            total_params2 = {}
+            if requested_by:
+                total_params2["rb"] = requested_by
+            if from_date:
+                total_params2["from_date"] = from_date
+            if to_date:
+                total_params2["to_date"] = to_date
+            if name:
+                total_params2["ename"] = f"%{name}%"
+            fb_total_sql = text(
+                f"""
+                SELECT COUNT(1) AS total
+                FROM public.gauge_tracker gt
+                LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gt.gauge_id
+                {fb_where}
+                """
+            )
+            total_row2 = db.execute(fb_total_sql, total_params2).mappings().first()
+            total = int(total_row2["total"]) if total_row2 and total_row2.get("total") is not None else len(rows)
+        except Exception:
+            total = len(rows)
+
+    try:
+        if response is not None:
+            response.headers["X-Total-Count"] = str(total if total is not None else len(rows))
+    except Exception:
+        pass
     return list(rows)
 
 
@@ -1125,7 +2125,12 @@ def create_gauge_track(payload: schemas.GaugeTrackCreate, db: Session = Depends(
           requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           status VARCHAR(20) NOT NULL DEFAULT 'requested',
           accepted_by VARCHAR(100),
-          accepted_at TIMESTAMPTZ
+          accepted_at TIMESTAMPTZ,
+          returned_by VARCHAR(100),
+          returned_at TIMESTAMPTZ,
+          purpose TEXT,
+          return_status VARCHAR(50),
+          return_remarks TEXT
         )
         """
     ))
@@ -1175,7 +2180,14 @@ def create_gauge_track(payload: schemas.GaugeTrackCreate, db: Session = Depends(
           gr.status,
           NULL::varchar as accepted_by,
           NULL::timestamptz as accepted_at,
-          gr.purpose
+          gr.purpose,
+          (
+            SELECT ARRAY(
+              SELECT gr2.label FROM public.gauge_ranges gr2
+              WHERE gr2.gauge_id = e.gauge_id
+              ORDER BY gr2.label ASC
+            )
+          ) AS ranges
         FROM public.gauge_requests gr
         LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gr.gauge_id
         WHERE gr.id = :id
@@ -1289,7 +2301,7 @@ def qrcode_by_idfn_png(idfn: str, request: Request, db: Session = Depends(get_db
                 for f in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%m/%d/%Y"):
                     try:
                         return _dt.strptime(d[:10], f).strftime("%d/%m/%Y")
-                    except Exception:
+                    except ValueError:
                         pass
                 return d
             if hasattr(d, 'strftime'):
@@ -1420,7 +2432,14 @@ def get_report_storage_dir() -> str:
 
 
 @app.get("/reports")
-def list_reports(limit: int = 200, offset: int = 0, q: str | None = None, db: Session = Depends(get_db)):
+def list_reports(
+    limit: int = 200,
+    offset: int = 0,
+    q: str | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
+    db: Session = Depends(get_db),
+):
     ensure_reports_table(db)
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
@@ -1429,6 +2448,22 @@ def list_reports(limit: int = 200, offset: int = 0, q: str | None = None, db: Se
     if q:
         where = "WHERE e.name_of_the_equipment ILIKE :qs OR e.idfn_no ILIKE :qs OR e.location ILIKE :qs"
         params["qs"] = f"%{q}%"
+    # Sorting
+    rep_allowed = {
+        "gauge_id": "e.gauge_id",
+        "name": "e.name_of_the_equipment",
+        "name_of_the_equipment": "e.name_of_the_equipment",
+        "idfn_no": "e.idfn_no",
+        "location": "e.location",
+        "date_of_last_calibration": "e.date_of_last_calibration",
+        "calibration_due": "e.calibration_due",
+        "calibration_freq_months": "e.calibration_freq_months",
+        "updated_at": "r.updated_at",
+    }
+    rep_col = rep_allowed.get((sort_by or "").lower(), "e.gauge_id")
+    rep_dir = "DESC" if (sort_dir or "").lower() == "desc" else "ASC"
+    rep_order = f"{rep_col} {rep_dir}"
+
     sql = text(
         f"""
         SELECT 
@@ -1446,12 +2481,28 @@ def list_reports(limit: int = 200, offset: int = 0, q: str | None = None, db: Se
         FROM public.equipment_used_for_calibration e
         LEFT JOIN public.calibration_reports r ON r.gauge_id = e.gauge_id
         {where}
-        ORDER BY e.gauge_id
+        ORDER BY {rep_order}
         LIMIT :limit OFFSET :offset
         """
     )
     rows = db.execute(sql, params).mappings().all()
-    return {"items": list(rows), "limit": limit, "offset": offset, "count": len(rows)}
+    # Compute total with same filter (based on equipment table)
+    try:
+        count_sql = text(
+            f"""
+            SELECT COUNT(1) AS total
+            FROM public.equipment_used_for_calibration e
+            {where}
+            """
+        )
+        count_params = {}
+        if "qs" in params:
+            count_params["qs"] = params["qs"]
+        total_row = db.execute(count_sql, count_params).mappings().first()
+        total = int(total_row["total"]) if total_row and total_row.get("total") is not None else len(rows)
+    except Exception:
+        total = len(rows)
+    return {"items": list(rows), "limit": limit, "offset": offset, "count": len(rows), "total": total}
 
 
 def _allowed_ext(filename: str) -> str:
@@ -1643,6 +2694,654 @@ def barcode_by_idfn_png(idfn: str, db: Session = Depends(get_db)):
     buf.seek(0)
     return StreamingResponse(buf, media_type="image/png")
 
+
+
+# =========================
+# Equipment Import (CSV/XLSX)
+# =========================
+
+EQUIPMENT_IMPORT_HEADERS = [
+    "name_of_the_equipment",
+    "location",
+    "receipt_date",
+    "make_model",
+    "idfn_no",
+    "overall_measurement_uncertainty",
+    "calibration_freq_months",
+    "date_of_last_calibration",
+    "calibration_due",
+    "pcr_number",
+    "ranges",
+]
+
+
+def ensure_import_cache_table(db: Session):
+    try:
+        db.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS public.import_payload_cache (
+              id UUID PRIMARY KEY,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              kind TEXT NOT NULL,
+              payload JSONB NOT NULL
+            )
+            """
+        ))
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def ensure_equipment_pcr_unique_index(db: Session):
+    try:
+        db.execute(text(
+            """
+            DO $$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relkind = 'i'
+                  AND c.relname = 'uniq_equipment_pcr_nonnull'
+                  AND n.nspname = 'public'
+              ) THEN
+                CREATE UNIQUE INDEX uniq_equipment_pcr_nonnull
+                  ON public.equipment_used_for_calibration (pcr_number)
+                  WHERE pcr_number IS NOT NULL;
+              END IF;
+            END$$;
+            """
+        ))
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def _is_sample_row(row: dict) -> bool:
+    try:
+        idfn = (row.get("idfn_no") or "").strip()
+        name = (row.get("name_of_the_equipment") or "").strip()
+        pcr_raw = row.get("pcr_number")
+        pcr = None
+        if pcr_raw is not None and str(pcr_raw).strip() != "":
+            try:
+                pcr = int(str(pcr_raw).strip())
+            except Exception:
+                pcr = None
+        if idfn == "SAMPLE-DO-NOT-UPLOAD" or name == "EXAMPLE_ROW" or (pcr in {0, -1}):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _parse_ranges_cell(val: str | None) -> list[str] | None:
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s:
+        return None
+    parts = [p.strip() for p in s.split(";")]
+    parts = [p for p in parts if p]
+    return parts or None
+
+
+def _parse_date_flexible(v) -> str | None:
+    # Accept: None/empty -> None, datetime/date objects, and common string formats
+    if v is None:
+        return None
+    try:
+        from datetime import date as _date, datetime as _dt
+        if isinstance(v, _dt):
+            return v.date().strftime("%Y-%m-%d")
+        if isinstance(v, _date):
+            return v.strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    s = str(v).strip()
+    if not s:
+        return None
+    # If already YYYY-MM-DD
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return s
+    # Try common alternatives
+    from datetime import datetime as _dt2
+    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y", "%Y/%m/%d"):
+        try:
+            return _dt2.strptime(s, fmt).strftime("%Y-%m-%d")
+        except Exception:
+            continue
+    # As a last resort, try pandas-like parse if available (optional)
+    try:
+        import dateutil.parser as _du  # type: ignore
+        dt = _du.parse(s, dayfirst=False, yearfirst=False)
+        return dt.date().strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    raise ValueError("must be a valid date (YYYY-MM-DD or common formats like 1/1/2025)")
+
+
+def _add_months(iso_date: str, months: int) -> str:
+    y, m, d = [int(x) for x in iso_date.split("-")]
+    y2 = y + (m - 1 + months) // 12
+    m2 = (m - 1 + months) % 12 + 1
+    last_day = calendar.monthrange(y2, m2)[1]
+    d2 = min(d, last_day)
+    return f"{y2:04d}-{m2:02d}-{d2:02d}"
+
+
+def _normalize_and_validate_row(idx: int, row: dict) -> tuple[dict | None, list[str]]:
+    errors: list[str] = []
+    # required fields
+    name = (row.get("name_of_the_equipment") or "").strip()
+    if not name:
+        errors.append("name_of_the_equipment is required")
+    idfn = (row.get("idfn_no") or "").strip()
+    if not idfn:
+        errors.append("idfn_no is required")
+
+    # optional strings
+    loc = (row.get("location") or None)
+    if isinstance(loc, str):
+        loc = loc.strip() or None
+    make_model = (row.get("make_model") or None)
+    if isinstance(make_model, str):
+        make_model = make_model.strip() or None
+    omu = (row.get("overall_measurement_uncertainty") or None)
+    if isinstance(omu, str):
+        omu = omu.strip() or None
+
+    # dates
+    receipt_date = None
+    try:
+        receipt_date = _parse_date_flexible(row.get("receipt_date"))
+    except Exception as e:
+        errors.append(f"receipt_date {str(e)}")
+    last_cal = None
+    try:
+        last_cal = _parse_date_flexible(row.get("date_of_last_calibration"))
+    except Exception as e:
+        errors.append(f"date_of_last_calibration {str(e)}")
+    due = None
+    if row.get("calibration_due") not in (None, ""):
+        try:
+            due = _parse_date_flexible(row.get("calibration_due"))
+        except Exception as e:
+            errors.append(f"calibration_due {str(e)}")
+
+    # calibration_freq_months
+    freq = None
+    if row.get("calibration_freq_months") not in (None, ""):
+        try:
+            freq = int(str(row.get("calibration_freq_months")).strip())
+            if freq < 1:
+                raise ValueError()
+        except Exception:
+            errors.append("calibration_freq_months must be integer >= 1")
+
+    # pcr_number
+    pcr = None
+    if row.get("pcr_number") not in (None, ""):
+        try:
+            pcr = int(str(row.get("pcr_number")).strip())
+        except Exception:
+            errors.append("pcr_number must be an integer")
+
+    # ranges
+    ranges = _parse_ranges_cell(row.get("ranges"))
+
+    # compute due if not provided
+    if due is None:
+        if last_cal and (freq is not None):
+            try:
+                due = _add_months(last_cal, freq)
+            except Exception:
+                pass
+        elif freq is not None:
+            try:
+                from datetime import date as _date
+                today = _date.today().strftime("%Y-%m-%d")
+                due = _add_months(today, freq)
+            except Exception:
+                pass
+
+    normalized = {
+        "name_of_the_equipment": name,
+        "location": loc,
+        "receipt_date": receipt_date,
+        "make_model": make_model,
+        "idfn_no": idfn,
+        "overall_measurement_uncertainty": omu,
+        "calibration_freq_months": freq,
+        "date_of_last_calibration": last_cal,
+        "calibration_due": due,
+        "pcr_number": pcr,
+        "ranges": ranges,
+        "_row_index": idx,
+    }
+    return (normalized if not errors else None), errors
+
+
+def _read_csv_bytes(data: bytes) -> list[dict]:
+    text = data.decode("utf-8-sig")
+    reader = csv.DictReader(_io.StringIO(text))
+    return list(reader)
+
+
+@app.get("/api/equipment/import/template.csv")
+def equipment_template_csv():
+    output = _io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(EQUIPMENT_IMPORT_HEADERS)
+    writer.writerow([
+        "Pressure Gauge",
+        "Workshop A",
+        "2024-01-15",
+        "Model-X",
+        "SAMPLE-DO-NOT-UPLOAD",
+        "±0.5%",
+        "12",
+        "2024-01-15",
+        "2025-01-15",
+        "0",
+        "0–100 PSI;0–10 bar",
+    ])
+    buf = output.getvalue().encode("utf-8")
+    headers = {
+        "Content-Disposition": "attachment; filename=equipment_template.csv",
+        "Content-Type": "text/csv; charset=utf-8",
+    }
+    return StreamingResponse(_io.BytesIO(buf), headers=headers, media_type="text/csv")
+
+
+@app.get("/api/equipment/import/template.xlsx")
+def equipment_template_xlsx():
+    # Optional: generate Excel if openpyxl is available; otherwise instruct to use CSV
+    try:
+        import openpyxl  # type: ignore
+        from openpyxl import Workbook  # type: ignore
+    except Exception:
+        raise HTTPException(status_code=501, detail="Excel generation not available. Please use the CSV template endpoint.")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "EquipmentTemplate"
+    ws.append(EQUIPMENT_IMPORT_HEADERS)
+    ws.append([
+        "Pressure Gauge",
+        "Workshop A",
+        "2024-01-15",
+        "Model-X",
+        "SAMPLE-DO-NOT-UPLOAD",
+        "±0.5%",
+        12,
+        "2024-01-15",
+        "2025-01-15",
+        0,
+        "0–100 PSI;0–10 bar",
+    ])
+    # Optional instructions sheet
+    ins = wb.create_sheet("Instructions")
+    ins.append(["Instructions"])
+    ins.append(["Required: name_of_the_equipment, idfn_no."])
+    ins.append(["Dates must be YYYY-MM-DD."])
+    ins.append(["Example row is skipped automatically on upload."])
+    ins.append(["ranges is semicolon-separated values."])
+    tmp = _io.BytesIO()
+    wb.save(tmp)
+    tmp.seek(0)
+    headers = {"Content-Disposition": "attachment; filename=equipment_template.xlsx"}
+    return StreamingResponse(tmp, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
+
+
+@app.post("/api/equipment/import/validate")
+async def equipment_import_validate(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    ensure_equipment_pcr_unique_index(db)
+    ensure_import_cache_table(db)
+    name = (file.filename or "").lower()
+    ext = None
+    for e in (".xlsx", ".csv"):
+        if name.endswith(e):
+            ext = e
+            break
+    if not ext:
+        raise HTTPException(status_code=400, detail="Unsupported file type. Allowed: .xlsx, .csv")
+
+    raw = await file.read()
+    rows: list[dict]
+    if ext == ".csv":
+        try:
+            rows = _read_csv_bytes(raw)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+    else:
+        # Excel optional
+        try:
+            import openpyxl  # type: ignore
+        except Exception:
+            raise HTTPException(status_code=400, detail="Excel parsing not available. Please upload CSV.")
+        try:
+            from openpyxl import load_workbook  # type: ignore
+            wb = load_workbook(_io.BytesIO(raw))
+            ws = wb.active
+            headers = [str(c.value).strip() if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1))[0:len(EQUIPMENT_IMPORT_HEADERS)]]
+            # Fallback: read entire first row
+            if not headers:
+                headers = [str(c.value or "").strip() for c in ws[1]]
+            data_rows = []
+            for r in ws.iter_rows(min_row=2, values_only=True):
+                data_rows.append({headers[i]: (r[i] if i < len(r) else None) for i in range(len(headers))})
+            rows = data_rows
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {str(e)}")
+
+    # Header validation (order-insensitive)
+    input_headers = set([h.strip() for h in (rows[0].keys() if rows else [])])
+    expected_headers = set(EQUIPMENT_IMPORT_HEADERS)
+    if rows and input_headers != expected_headers:
+        return {
+            "total_rows": 0,
+            "valid_rows": 0,
+            "invalid_rows": 0,
+            "conflicts_count": 0,
+            "errors": ["Headers do not match expected fields"],
+            "row_errors": [],
+            "conflicts": [],
+            "parsed_payload_id": None,
+        }
+
+    # Iterate and validate
+    valid: list[dict] = []
+    row_errors: list[dict] = []
+    skipped_sample = 0
+    for i, r in enumerate(rows, start=2):  # 1-based header; so row index starts at 2
+        if _is_sample_row(r):
+            skipped_sample += 1
+            continue
+        normalized, errs = _normalize_and_validate_row(i, r)
+        if errs:
+            row_errors.append({"row_index": i, "message": "; ".join(errs)})
+        elif normalized:
+            valid.append(normalized)
+
+    # Detect conflicts by pcr_number
+    pcrs = [v["pcr_number"] for v in valid if v.get("pcr_number") is not None]
+    conflicts: list[dict] = []
+    if pcrs:
+        placeholders = ",".join([f":p{i}" for i in range(len(pcrs))])
+        params = {f"p{i}": p for i, p in enumerate(pcrs)}
+        sql = text(f"SELECT gauge_id, name_of_the_equipment, idfn_no, calibration_freq_months, date_of_last_calibration, calibration_due, pcr_number FROM public.equipment_used_for_calibration WHERE pcr_number IN ({placeholders})")
+        existing = {int(r["pcr_number"]): r for r in db.execute(sql, params).mappings().all()}
+        for v in valid:
+            p = v.get("pcr_number")
+            if p is not None and int(p) in existing:
+                conflicts.append({
+                    "row_index": v["_row_index"],
+                    "pcr_number": int(p),
+                    "existingPreview": {
+                        "name_of_the_equipment": existing[int(p)].get("name_of_the_equipment"),
+                        "idfn_no": existing[int(p)].get("idfn_no"),
+                        "calibration_freq_months": existing[int(p)].get("calibration_freq_months"),
+                        "date_of_last_calibration": str(existing[int(p)].get("date_of_last_calibration") or ""),
+                        "calibration_due": str(existing[int(p)].get("calibration_due") or ""),
+                    },
+                    "incomingPreview": {
+                        "name_of_the_equipment": v.get("name_of_the_equipment"),
+                        "idfn_no": v.get("idfn_no"),
+                        "calibration_freq_months": v.get("calibration_freq_months"),
+                        "date_of_last_calibration": v.get("date_of_last_calibration"),
+                        "calibration_due": v.get("calibration_due"),
+                    }
+                })
+
+    # Cache payload
+    payload_id = str(uuid.uuid4())
+    try:
+        ensure_import_cache_table(db)
+        db.execute(text("INSERT INTO public.import_payload_cache (id, kind, payload) VALUES (:id, :kind, CAST(:payload AS JSONB))"), {
+            "id": payload_id,
+            "kind": "equipment_import_validate",
+            "payload": json.dumps({"valid": valid, "row_errors": row_errors})
+        })
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+    return {
+        "total_rows": len(rows) - skipped_sample,
+        "valid_rows": len(valid),
+        "invalid_rows": len(row_errors),
+        "conflicts_count": len(conflicts),
+        "errors": [],
+        "row_errors": row_errors,
+        "conflicts": conflicts,
+        "parsed_payload_id": payload_id,
+    }
+
+
+
+def ensure_audit_tables(db: Session):
+    try:
+        db.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS public.audit_imports (
+              id UUID PRIMARY KEY,
+              user_name TEXT,
+              file_name TEXT,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              created_count INTEGER NOT NULL DEFAULT 0,
+              updated_count INTEGER NOT NULL DEFAULT 0,
+              skipped_count INTEGER NOT NULL DEFAULT 0,
+              error_count INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        ))
+        db.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS public.audit_import_rows (
+              import_id UUID NOT NULL,
+              row_index INTEGER NOT NULL,
+              pcr_number BIGINT,
+              action TEXT,
+              message TEXT,
+              previous_snapshot JSONB,
+              new_snapshot JSONB
+            )
+            """
+        ))
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def _sync_ranges(db: Session, gauge_id: int, ranges: list[str] | None):
+    try:
+        db.execute(text("CREATE TABLE IF NOT EXISTS public.gauge_ranges (id SERIAL PRIMARY KEY, gauge_id INTEGER NOT NULL, label TEXT NOT NULL)"))
+    except Exception:
+        pass
+    db.execute(text("DELETE FROM public.gauge_ranges WHERE gauge_id = :gid"), {"gid": gauge_id})
+    if ranges:
+        for lbl in ranges:
+            db.execute(text("INSERT INTO public.gauge_ranges (gauge_id, label) VALUES (:gid, :lbl)"), {"gid": gauge_id, "lbl": lbl})
+
+
+@app.post("/api/equipment/import/commit")
+def equipment_import_commit(
+    payload: dict,
+    db: Session = Depends(get_db),
+    x_actor: str | None = Header(default=None, alias="X-Actor"),
+):
+    ensure_equipment_pcr_unique_index(db)
+    ensure_import_cache_table(db)
+    ensure_audit_tables(db)
+
+    parsed_id = (payload.get("parsed_payload_id") or "").strip()
+    if not parsed_id:
+        raise HTTPException(status_code=400, detail="parsed_payload_id is required")
+    decisions = payload.get("decisions") or []
+    bulk = (payload.get("bulk") or {}).copy()  # { action: 'discard'|'override' }
+    file_name = payload.get("file_name") or None
+    actor = payload.get("actor") or x_actor or "admin"
+
+    # TODO RBAC: validate actor has admin role when auth is available.
+
+    row = db.execute(text("SELECT payload FROM public.import_payload_cache WHERE id = :id"), {"id": parsed_id}).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Parsed payload not found or expired")
+    cached = row["payload"] if isinstance(row["payload"], dict) else json.loads(row["payload"])
+    valid_rows: list[dict] = cached.get("valid") or []
+
+    # Build decision map
+    decision_map: dict[int, str] = {}
+    for d in decisions:
+        try:
+            idx = int(d.get("row_index"))
+            act = (d.get("action") or "").lower()
+            if act in ("discard", "override"):
+                decision_map[idx] = act
+        except Exception:
+            continue
+    bulk_action = (bulk.get("action") or "").lower()
+    if bulk_action not in ("", "discard", "override"):
+        bulk_action = ""
+
+    # Prepare audit
+    import_id = str(uuid.uuid4())
+    created = updated = skipped = err_count = 0
+
+    # Upsert loop in small batches
+    for v in valid_rows:
+        idx = int(v.get("_row_index"))
+        act = decision_map.get(idx) or bulk_action or ""  # default: create if no conflict
+
+        # Detect conflict by pcr_number
+        p = v.get("pcr_number")
+        existing = None
+        if p is not None:
+            existing = db.execute(text("SELECT * FROM public.equipment_used_for_calibration WHERE pcr_number = :p LIMIT 1"), {"p": int(p)}).mappings().first()
+
+        if existing is not None and act == "discard":
+            skipped += 1
+            db.execute(text(
+                "INSERT INTO public.audit_import_rows (import_id, row_index, pcr_number, action, message, previous_snapshot, new_snapshot) VALUES (:iid, :idx, :pcr, 'skipped', 'discarded by decision', CAST(:prev AS JSONB), NULL)"
+            ), {"iid": import_id, "idx": idx, "pcr": int(p), "prev": json.dumps(dict(existing))})
+            continue
+
+        try:
+            # Compute final due if needed
+            due = v.get("calibration_due")
+            freq = v.get("calibration_freq_months")
+            last = v.get("date_of_last_calibration")
+            if not due:
+                if last and (freq is not None):
+                    due = _add_months(last, int(freq))
+                elif freq is not None:
+                    from datetime import date as _date
+                    due = _add_months(_date.today().strftime("%Y-%m-%d"), int(freq))
+
+            if existing is None:
+                # INSERT new equipment
+                res = db.execute(text(
+                    """
+                    INSERT INTO public.equipment_used_for_calibration (
+                      name_of_the_equipment, location, receipt_date, make_model, idfn_no,
+                      overall_measurement_uncertainty, calibration_freq_months, date_of_last_calibration,
+                      calibration_due, pcr_number
+                    ) VALUES (
+                      :name, :loc, CAST(:receipt AS DATE), :mmodel, :idfn,
+                      :omu, :freq, CAST(:last AS DATE), CAST(:due AS DATE), :pcr
+                    ) RETURNING gauge_id
+                    """
+                ), {
+                    "name": v.get("name_of_the_equipment"),
+                    "loc": v.get("location"),
+                    "receipt": v.get("receipt_date"),
+                    "mmodel": v.get("make_model"),
+                    "idfn": v.get("idfn_no"),
+                    "omu": v.get("overall_measurement_uncertainty"),
+                    "freq": v.get("calibration_freq_months"),
+                    "last": v.get("date_of_last_calibration"),
+                    "due": due,
+                    "pcr": v.get("pcr_number"),
+                })
+                gid = int(res.fetchone()[0])
+                _sync_ranges(db, gid, v.get("ranges"))
+                created += 1
+                db.execute(text(
+                    "INSERT INTO public.audit_import_rows (import_id, row_index, pcr_number, action, message, previous_snapshot, new_snapshot) VALUES (:iid, :idx, :pcr, 'created', NULL, NULL, CAST(:new AS JSONB))"
+                ), {"iid": import_id, "idx": idx, "pcr": v.get("pcr_number"), "new": json.dumps({k: v.get(k) for k in v if not k.startswith("_")})})
+            else:
+                if act != "override":
+                    # treat as skip when conflict and no override
+                    skipped += 1
+                    db.execute(text(
+                        "INSERT INTO public.audit_import_rows (import_id, row_index, pcr_number, action, message, previous_snapshot, new_snapshot) VALUES (:iid, :idx, :pcr, 'skipped', 'conflict without override', CAST(:prev AS JSONB), CAST(:new AS JSONB))"
+                    ), {"iid": import_id, "idx": idx, "pcr": int(p), "prev": json.dumps(dict(existing)), "new": json.dumps({k: v.get(k) for k in v if not k.startswith("_")})})
+                else:
+                    # UPDATE existing by pcr_number
+                    db.execute(text(
+                        """
+                        UPDATE public.equipment_used_for_calibration
+                        SET name_of_the_equipment = :name,
+                            location = :loc,
+                            receipt_date = CAST(:receipt AS DATE),
+                            make_model = :mmodel,
+                            idfn_no = :idfn,
+                            overall_measurement_uncertainty = :omu,
+                            calibration_freq_months = :freq,
+                            date_of_last_calibration = CAST(:last AS DATE),
+                            calibration_due = CAST(:due AS DATE)
+                        WHERE pcr_number = :pcr
+                        """
+                    ), {
+                        "name": v.get("name_of_the_equipment"),
+                        "loc": v.get("location"),
+                        "receipt": v.get("receipt_date"),
+                        "mmodel": v.get("make_model"),
+                        "idfn": v.get("idfn_no"),
+                        "omu": v.get("overall_measurement_uncertainty"),
+                        "freq": v.get("calibration_freq_months"),
+                        "last": v.get("date_of_last_calibration"),
+                        "due": due,
+                        "pcr": int(p),
+                    })
+                    gid = int(existing.get("gauge_id"))
+                    _sync_ranges(db, gid, v.get("ranges"))
+                    updated += 1
+                    db.execute(text(
+                        "INSERT INTO public.audit_import_rows (import_id, row_index, pcr_number, action, message, previous_snapshot, new_snapshot) VALUES (:iid, :idx, :pcr, 'updated', NULL, CAST(:prev AS JSONB), CAST(:new AS JSONB))"
+                    ), {"iid": import_id, "idx": idx, "pcr": int(p), "prev": json.dumps(dict(existing)), "new": json.dumps({k: v.get(k) for k in v if not k.startswith("_")})})
+        except IntegrityError as e:
+            err_count += 1
+            db.rollback()
+            db.execute(text(
+                "INSERT INTO public.audit_import_rows (import_id, row_index, pcr_number, action, message, previous_snapshot, new_snapshot) VALUES (:iid, :idx, :pcr, 'error', :msg, NULL, CAST(:new AS JSONB))"
+            ), {"iid": import_id, "idx": idx, "pcr": v.get("pcr_number"), "msg": str(e), "new": json.dumps({k: v.get(k) for k in v if not k.startswith("_")})})
+        except Exception as e:
+            err_count += 1
+            db.rollback()
+            db.execute(text(
+                "INSERT INTO public.audit_import_rows (import_id, row_index, pcr_number, action, message, previous_snapshot, new_snapshot) VALUES (:iid, :idx, :pcr, 'error', :msg, NULL, CAST(:new AS JSONB))"
+            ), {"iid": import_id, "idx": idx, "pcr": v.get("pcr_number"), "msg": str(e), "new": json.dumps({k: v.get(k) for k in v if not k.startswith("_")})})
+
+    # finalize audit summary
+    db.execute(text(
+        "INSERT INTO public.audit_imports (id, user_name, file_name, created_count, updated_count, skipped_count, error_count) VALUES (:id, :user, :file, :c, :u, :s, :e)"
+    ), {"id": import_id, "user": actor, "file": file_name, "c": created, "u": updated, "s": skipped, "e": err_count})
+    db.commit()
+
+    return {"created": created, "updated": updated, "skipped": skipped, "errors": err_count, "audit_id": import_id}
 
 
 

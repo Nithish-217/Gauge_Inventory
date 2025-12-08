@@ -93,6 +93,12 @@ export default function AdminDashboard() {
               <span>Label Manager</span>
             </span>
           </NavLink>
+          <NavLink to="email-config" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>
+            <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
+              <span className="anticon" aria-hidden="true">✉️</span>
+              <span>Email Config</span>
+            </span>
+          </NavLink>
         </nav>
       </aside>
 

@@ -13,7 +13,7 @@ class LoginRequest(BaseModel):
 class UserPublic(BaseModel):
     id: int
     username: str
-    email: EmailStr
+    email: EmailStr | None = None
     role: str
     employee_id: str | None = None
     created_at: datetime
@@ -54,6 +54,7 @@ class EquipmentCreate(BaseModel):
     date_of_last_calibration: str | None = None  # ISO date string
     calibration_due: str | None = None  # ISO date string
     pcr_number: int | None = None
+    ranges: list[str] | None = None  # e.g., ["0–100 PSI", "0–10 bar"]
 
 
 class EquipmentPublic(BaseModel):
@@ -64,6 +65,7 @@ class EquipmentPublic(BaseModel):
     idfn_no: str
     date_of_last_calibration: date | None = None
     calibration_due: date | None = None
+    ranges: list[str] | None = None
 
 
 class EquipmentUpdate(BaseModel):
@@ -77,6 +79,7 @@ class EquipmentUpdate(BaseModel):
     date_of_last_calibration: str | None = None  # ISO date string
     calibration_due: str | None = None  # ISO date string
     pcr_number: int | None = None
+    ranges: list[str] | None = None
 
 
 class RequestCreate(BaseModel):
@@ -120,6 +123,7 @@ class GaugeTrackPublic(BaseModel):
     purpose: str | None = None  # Purpose for requesting the gauge
     return_status: str | None = None  # Return condition: Good, Bad, Needs Repair, or Custom
     return_remarks: str | None = None
+    ranges: list[str] | None = None
 
 
 class GaugeTrackAction(BaseModel):

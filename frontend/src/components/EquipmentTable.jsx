@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Table, Button, Input, InputNumber, Space, message, Modal, Pagination } from 'antd'
+import { Table, Button, Input, InputNumber, Space, message, Modal, Pagination, AutoComplete, Tag } from 'antd'
+import { loadJsPDF, makeHeaderFooter, formatNow } from '../utils/pdfExport.js'
 import { ReloadOutlined, PlusOutlined, EditOutlined, DeleteOutlined, ShoppingCartOutlined } from '@ant-design/icons'
 
 const { TextArea } = Input
@@ -12,6 +13,8 @@ export default function EquipmentTable({ mode = 'admin' }) {
   const [currentPage, setCurrentPage] = useState(1)
   const [totalItems, setTotalItems] = useState(0)
   const [pageSize, setPageSize] = useState(10)
+  const [sortBy, setSortBy] = useState('name_of_the_equipment')
+  const [sortDir, setSortDir] = useState('asc')
   const scrollRef = useRef(null)
   const [adding, setAdding] = useState(false)
   const [addErr, setAddErr] = useState('')
@@ -31,7 +34,8 @@ export default function EquipmentTable({ mode = 'admin' }) {
     calibration_freq_months: '',
     date_of_last_calibration: '',
     calibration_due: '',
-    pcr_number: ''
+    pcr_number: '',
+    ranges: ''
   })
   const [requestedBy, setRequestedBy] = useState(() => {
     try { return localStorage.getItem('username') || 'operator' } catch { return 'operator' }
@@ -53,9 +57,102 @@ export default function EquipmentTable({ mode = 'admin' }) {
     calibration_freq_months: '',
     date_of_last_calibration: '',
     calibration_due: '',
-    pcr_number: ''
+    pcr_number: '',
+    ranges: ''
   })
   const limit = pageSize
+  const bcRef = useRef(null)
+  const [suggestions, setSuggestions] = useState([])
+  const [suggestLoading, setSuggestLoading] = useState(false)
+  const [locationFilter, setLocationFilter] = useState('')
+  const [locOptions, setLocOptions] = useState([])
+  const [locLoading, setLocLoading] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [holderMap, setHolderMap] = useState({}) // { [gauge_id]: string (holder name) }
+  
+
+  useEffect(() => {
+    try {
+      bcRef.current = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('equipment-events') : null
+    } catch { bcRef.current = null }
+    return () => { try { bcRef.current && bcRef.current.close() } catch {} }
+  }, [])
+
+  // Build a map of current holders from Gauge Tracker (accepted and not returned; fall back to requested_by when pending)
+  useEffect(() => {
+    let cancelled = false
+    const loadHolders = async () => {
+      try {
+        const map = {}
+        let offset = 0
+        const pageLimit = 500
+        for (let i = 0; i < 50; i++) {
+          const params = new URLSearchParams({ limit: String(pageLimit), offset: String(offset) })
+          params.set('sort_by', 'requested_at')
+          params.set('sort_dir', 'desc')
+          const res = await fetch(`/gauge-tracker?${params.toString()}`)
+          if (!res.ok) break
+          const data = await res.json().catch(()=>[])
+          const rows = Array.isArray(data) ? data : []
+          for (const r of rows) {
+            const gid = Number(r.gauge_id)
+            if (!gid) continue
+            const status = String(r.status||'').toLowerCase()
+            const open = !r.returned_at && (status === 'accepted' || status === 'requested')
+            if (open) {
+              // Always prefer the operator who requested as the holder name
+              const who = (r.requested_by || r.accepted_by || '')
+              if (who) map[gid] = who
+            }
+          }
+          if (rows.length < pageLimit) break
+          offset += pageLimit
+        }
+        if (!cancelled) setHolderMap(map)
+      } catch {
+        if (!cancelled) setHolderMap({})
+      }
+    }
+    loadHolders()
+    return () => { cancelled = true }
+  }, [])
+
+  // Typeahead suggestions
+  const fetchSuggest = async (text) => {
+    const s = (text || '').trim()
+    if (!s) { setSuggestions([]); return }
+    setSuggestLoading(true)
+    try {
+      const res = await fetch(`/equipment/suggest?q=${encodeURIComponent(s)}&limit=10`)
+      const data = await res.json().catch(()=>[])
+      const opts = Array.isArray(data) ? data.map((it, idx) => ({
+        value: it.value,
+        label: (
+          <div key={`${it.type}-${idx}`} style={{ display:'flex', justifyContent:'space-between' }}>
+            <span>{it.value}</span>
+            <Tag color={it.type === 'idfn' ? 'blue' : 'default'} style={{ marginLeft: 8 }}>{it.type}</Tag>
+          </div>
+        )
+      })) : []
+      setSuggestions(opts)
+    } catch { setSuggestions([]) }
+    finally { setSuggestLoading(false) }
+  }
+
+  // Location suggestions (separate location filter)
+  const fetchLocationSuggest = async (text) => {
+    const s = (text || '').trim()
+    if (!s) { setLocOptions([]); return }
+    setLocLoading(true)
+    try {
+      const res = await fetch(`/equipment/location-suggest?q=${encodeURIComponent(s)}&limit=20`)
+      const data = await res.json().catch(()=>[])
+      const opts = Array.isArray(data) ? data.map((v) => ({ value: v, label: v })) : []
+      setLocOptions(opts)
+    } catch { setLocOptions([]) } finally { setLocLoading(false) }
+  }
+
+  
 
   // Helper: add months to a YYYY-MM-DD string and return YYYY-MM-DD
   function addMonthsISO(dateStr, months) {
@@ -99,6 +196,11 @@ export default function EquipmentTable({ mode = 'admin' }) {
       const curPage = typeof opts.page === 'number' ? opts.page : (currentPage - 1)
       const params = new URLSearchParams({ limit: String(limit), offset: String(curPage * limit) })
       if (q.trim()) params.set('q', q.trim())
+      if (sortBy) params.set('sort_by', sortBy)
+      if (sortDir) params.set('sort_dir', sortDir)
+      const loc = (typeof opts.location === 'string') ? opts.location : locationFilter
+      if ((loc || '').trim()) params.set('location', String(loc).trim())
+      
       const res = await fetch(`/equipment?${params.toString()}`)
       if (!res.ok) {
         const txt = await res.text()
@@ -115,7 +217,15 @@ export default function EquipmentTable({ mode = 'admin' }) {
     }
   }
 
-  useEffect(() => { fetchData({ page: currentPage - 1 }) }, [currentPage, pageSize])
+  useEffect(() => { fetchData({ page: currentPage - 1 }) }, [currentPage, pageSize, sortBy, sortDir])
+
+  // If location filter is cleared, reset results immediately
+  useEffect(() => {
+    if ((locationFilter || '').trim() === '') {
+      setCurrentPage(1)
+      fetchData({ page: 0, reset: true })
+    }
+  }, [locationFilter])
 
   // Initialize requestedMap for the logged-in operator to block duplicate requests across reloads
   useEffect(() => {
@@ -213,6 +323,17 @@ export default function EquipmentTable({ mode = 'admin' }) {
     }
     try {
       setAddLoading(true)
+      const parseRanges = (text) => {
+        try {
+          const raw = String(text || '')
+          const parts = raw.split(/\n|,/g).map(s=>s.trim()).filter(Boolean)
+          // de-duplicate preserving order
+          const seen = new Set()
+          const out = []
+          for (const p of parts) { if (!seen.has(p)) { seen.add(p); out.push(p) } }
+          return out
+        } catch { return [] }
+      }
       const payload = {
         ...form,
         calibration_freq_months: form.calibration_freq_months ? Number(form.calibration_freq_months) : null,
@@ -223,6 +344,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
         location: form.location || null,
         make_model: form.make_model || null,
         overall_measurement_uncertainty: form.overall_measurement_uncertainty || null,
+        ranges: parseRanges(form.ranges)
       }
       const res = await fetch('/equipment', {
         method: 'POST',
@@ -233,18 +355,32 @@ export default function EquipmentTable({ mode = 'admin' }) {
         const txt = await res.text()
         throw new Error(txt || 'Failed to add tool')
       }
-      await res.json()
-      // refresh
+      const created = await res.json()
+      // refresh and navigate to expected alphabetical position
       setAdding(false)
       setForm({
         name_of_the_equipment: '', location: '', receipt_date: '', make_model: '', idfn_no: '',
-        overall_measurement_uncertainty: '', calibration_freq_months: '', date_of_last_calibration: '', calibration_due: '', pcr_number: ''
+        overall_measurement_uncertainty: '', calibration_freq_months: '', date_of_last_calibration: '', calibration_due: '', pcr_number: '', ranges: ''
       })
-      setCurrentPage(1)
-      fetchData({ page: 0 })
+      try {
+        const qs = new URLSearchParams()
+        qs.set('name', created.name_of_the_equipment || '')
+        if (created.gauge_id != null) qs.set('gauge_id', String(created.gauge_id))
+        if (q.trim()) qs.set('q', q.trim())
+        const posRes = await fetch(`/equipment/position-by-name?${qs.toString()}`)
+        const pos = await posRes.json().catch(()=>({ index: 0 }))
+        const idx = Number(pos.index) || 0
+        const page = Math.floor(idx / pageSize) + 1
+        setCurrentPage(page)
+        fetchData({ page: page - 1 })
+      } catch {
+        setCurrentPage(1)
+        fetchData({ page: 0 })
+      }
       setAddSuccess('Tool saved successfully.')
       message.success('Tool added successfully')
       setTimeout(()=>setAddSuccess(''), 2500)
+      try { bcRef.current && bcRef.current.postMessage({ type: 'equipment:changed' }) } catch {}
     } catch (err) {
       setAddErr(typeof err?.message === 'string' ? err.message : 'Failed to add tool')
       message.error(typeof err?.message === 'string' ? err.message : 'Failed to add tool')
@@ -261,6 +397,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
         const txt = await res.text(); throw new Error(txt || 'Failed to delete')
       }
       fetchData()
+      try { bcRef.current && bcRef.current.postMessage({ type: 'equipment:changed' }) } catch {}
     } catch (err) {
       setError(typeof err?.message === 'string' ? err.message : 'Failed to delete')
     }
@@ -291,7 +428,8 @@ export default function EquipmentTable({ mode = 'admin' }) {
       calibration_freq_months: row.calibration_freq_months ?? '',
       date_of_last_calibration: toISO(row.date_of_last_calibration || ''),
       calibration_due: toISO(row.calibration_due || ''),
-      pcr_number: row.pcr_number ?? ''
+      pcr_number: row.pcr_number ?? '',
+      ranges: Array.isArray(row.ranges) && row.ranges.length ? row.ranges.join(', ') : ''
     })
     setEditing(true)
   }
@@ -302,6 +440,15 @@ export default function EquipmentTable({ mode = 'admin' }) {
     setEditErr('')
     try {
       setEditLoading(true)
+      const parseRanges = (text) => {
+        try {
+          const raw = String(text || '')
+          const parts = raw.split(/\n|,/g).map(s=>s.trim()).filter(Boolean)
+          const seen = new Set(); const out = []
+          for (const p of parts) { if (!seen.has(p)) { seen.add(p); out.push(p) } }
+          return out
+        } catch { return [] }
+      }
       const payload = {
         ...editForm,
         calibration_freq_months: editForm.calibration_freq_months === '' ? null : Number(editForm.calibration_freq_months),
@@ -312,6 +459,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
         location: editForm.location || null,
         make_model: editForm.make_model || null,
         overall_measurement_uncertainty: editForm.overall_measurement_uncertainty || null,
+        ranges: parseRanges(editForm.ranges)
       }
       const res = await fetch(`/equipment/${editRow.gauge_id}`, {
         method: 'PUT',
@@ -323,8 +471,26 @@ export default function EquipmentTable({ mode = 'admin' }) {
         throw new Error(txt || 'Failed to update tool')
       }
       const updated = await res.json()
+      // Update local row immediately
       setItems(prev => prev.map(r => r.gauge_id === updated.gauge_id ? { ...r, ...updated, key: updated.gauge_id } : r))
       setEditing(false)
+      // Broadcast change for other pages
+      try { bcRef.current && bcRef.current.postMessage({ type: 'equipment:changed' }) } catch {}
+      // Refresh and, if name changed, navigate to correct alphabetical page
+      try {
+        const qs = new URLSearchParams()
+        qs.set('name', updated.name_of_the_equipment || '')
+        if (updated.gauge_id != null) qs.set('gauge_id', String(updated.gauge_id))
+        if ((q || '').trim()) qs.set('q', q.trim())
+        const posRes = await fetch(`/equipment/position-by-name?${qs.toString()}`)
+        const pos = await posRes.json().catch(()=>({ index: 0 }))
+        const idx = Number(pos.index) || 0
+        const page = Math.floor(idx / pageSize) + 1
+        setCurrentPage(page)
+        await fetchData({ page: page - 1 })
+      } catch {
+        await fetchData({ page: currentPage - 1 })
+      }
     } catch (err) {
       setEditErr(typeof err?.message === 'string' ? err.message : 'Failed to update tool')
     } finally {
@@ -407,11 +573,10 @@ export default function EquipmentTable({ mode = 'admin' }) {
     const base = [
       { 
         title: 'Sl. No.', 
-        dataIndex: 'gauge_id', 
-        key: 'gauge_id', 
+        key: 'slno', 
         width: 100, 
         align: 'center',
-        sorter: (a,b)=>a.gauge_id-b.gauge_id 
+        render: (_,_row,index)=> ((currentPage - 1) * pageSize) + index + 1,
       },
       { 
         title: 'Equipment', 
@@ -419,7 +584,8 @@ export default function EquipmentTable({ mode = 'admin' }) {
         key: 'name_of_the_equipment', 
         ellipsis: true, 
         width: 200,
-        sorter: (a,b)=>String(a.name_of_the_equipment||'').localeCompare(String(b.name_of_the_equipment||'')) 
+        sorter: true,
+        defaultSortOrder: 'ascend'
       },
       { 
         title: 'Location', 
@@ -437,6 +603,18 @@ export default function EquipmentTable({ mode = 'admin' }) {
         ellipsis: true, 
         width: 150, 
         sorter: (a,b)=>String(a.make_model||'').localeCompare(String(b.make_model||'')) 
+      },
+      {
+        title: 'Range',
+        dataIndex: 'ranges',
+        key: 'ranges',
+        width: 200,
+        ellipsis: true,
+        render: (v) => {
+          const arr = Array.isArray(v) ? v : []
+          if (!arr.length) return <span style={{ color:'#999' }}>—</span>
+          return <span title={arr.join(', ')}>{arr.join(', ')}</span>
+        }
       },
       { 
         title: 'IDFN', 
@@ -506,13 +684,14 @@ export default function EquipmentTable({ mode = 'admin' }) {
           key: 'request', 
           fixed: 'right', 
           align: 'center',
-          width: 120,
+          width: 100,
           render: (_, row) => {
             const gid = Number(row.gauge_id)
             const isReq = !!requestedMap[gid]
             const isLoading = !!requesting[gid]
-            const disabled = !!row.is_unavailable || isReq || isLoading
-            const label = row.is_unavailable ? 'Unavailable' : (isReq ? 'Requested' : (isLoading ? 'Requesting...' : 'Request'))
+            const holder = holderMap[gid]
+            const disabled = !!holder || isReq || isLoading
+            const label = holder ? `Assigned to ${holder}` : (isReq ? 'Requested' : (isLoading ? 'Requesting...' : 'Request'))
             return (
               <Button
                 type="primary"
@@ -521,6 +700,17 @@ export default function EquipmentTable({ mode = 'admin' }) {
                 onClick={() => onRequest(row)}
                 disabled={disabled}
                 title={label}
+                style={{
+                  whiteSpace: holder ? 'normal' : 'nowrap',
+                  lineHeight: 1.2,
+                  textAlign: 'left',
+                  padding: '2px 8px',
+                  width: '100%',
+                  maxWidth: '100%',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'flex-start'
+                }}
               >
                 {label}
               </Button>
@@ -528,7 +718,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
           }
         }
     return [...base, actionCol]
-  }, [mode, requesting, requestedMap])
+  }, [mode, requesting, requestedMap, holderMap, currentPage, pageSize])
 
   const handlePageChange = (page, size) => {
     setCurrentPage(page)
@@ -537,10 +727,59 @@ export default function EquipmentTable({ mode = 'admin' }) {
     }
   }
 
+  const exportInventoryPDF = async () => {
+    try {
+      setExporting(true)
+      const jsPDF = await loadJsPDF()
+      const all = []
+      let offset = 0
+      const pageLimit = 500
+      for (let i = 0; i < 200; i++) {
+        const params = new URLSearchParams({ limit: String(pageLimit), offset: String(offset) })
+        if (q.trim()) params.set('q', q.trim())
+        if (sortBy) params.set('sort_by', sortBy)
+        if (sortDir) params.set('sort_dir', sortDir)
+        if ((locationFilter || '').trim()) params.set('location', String(locationFilter).trim())
+        const res = await fetch(`/equipment?${params.toString()}`)
+        if (!res.ok) break
+        const data = await res.json().catch(()=>({ items:[], total:0 }))
+        const arr = Array.isArray(data.items) ? data.items : []
+        all.push(...arr)
+        if (arr.length < pageLimit) break
+        offset += pageLimit
+      }
+      if (all.length === 0) { message.info('No records to export'); return }
+      const doc = new jsPDF({ orientation: 'landscape' })
+      const head = [[
+        'Gauge ID', 'Description', 'Make/Model', 'Range', 'Location', 'IDFN', 'Last Cal.', 'Next Due', 'PCR'
+      ]]
+      const body = all.map(r => [
+        String(r.gauge_id ?? ''),
+        String(r.name_of_the_equipment ?? ''),
+        String(r.make_model ?? ''),
+        (Array.isArray(r.ranges) && r.ranges.length ? r.ranges.join(', ') : ''),
+        String(r.location ?? ''),
+        String(r.idfn_no ?? ''),
+        r.date_of_last_calibration ? new Date(r.date_of_last_calibration).toLocaleDateString() : '',
+        r.calibration_due ? new Date(r.calibration_due).toLocaleDateString() : '',
+        String(r.pcr_number ?? '')
+      ])
+      doc.autoTable({ head, body, startY: 24, styles: { fontSize: 8 } })
+      makeHeaderFooter(doc, 'Gauge Inventory')
+      const fname = `gauge-inventory_${formatNow()}.pdf`
+      doc.save(fname)
+    } catch (e) {
+      message.error('Failed to generate PDF')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   return (
     <div className="equipment-table-container">
       <div className="table-header">
         <h2>Equipment Used for Calibration</h2>
+        <div></div>
       </div>
 
       {/* Operator view: auto-uses logged-in username; no manual input */}
@@ -600,15 +839,15 @@ export default function EquipmentTable({ mode = 'admin' }) {
                 placeholder="Enter make and model"
               />
             </div>
-            <div className="form-field">
-              <label className="form-label">Receipt Date</label>
-              {fieldErrors.receipt_date && <div className="form-error">{fieldErrors.receipt_date}</div>}
-              <input 
-                className={`form-input ${fieldErrors.receipt_date ? 'error' : ''}`}
-                type="date" 
-                name="receipt_date" 
-                value={form.receipt_date} 
+            <div className="form-field" style={{ gridColumn: '1 / -1' }}>
+              <label className="form-label">Ranges (comma or newline separated)</label>
+              <TextArea
+                className="form-input"
+                name="ranges"
+                value={form.ranges}
                 onChange={onFormChange}
+                placeholder="e.g., 0–100 PSI, 0–10 bar"
+                rows={2}
               />
             </div>
             <div className="form-field">
@@ -620,6 +859,17 @@ export default function EquipmentTable({ mode = 'admin' }) {
                 value={form.overall_measurement_uncertainty} 
                 onChange={onFormChange}
                 placeholder="Enter measurement uncertainty"
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label">Receipt Date</label>
+              {fieldErrors.receipt_date && <div className="form-error">{fieldErrors.receipt_date}</div>}
+              <input 
+                className={`form-input ${fieldErrors.receipt_date ? 'error' : ''}`}
+                type="date" 
+                name="receipt_date" 
+                value={form.receipt_date} 
+                onChange={onFormChange}
               />
             </div>
             <div className="form-field">
@@ -743,6 +993,17 @@ export default function EquipmentTable({ mode = 'admin' }) {
                 value={editForm.make_model} 
                 onChange={onEditFormChange}
                 placeholder="Enter make and model"
+              />
+            </div>
+            <div className="form-field" style={{ gridColumn: '1 / -1' }}>
+              <label className="form-label">Ranges (comma or newline separated)</label>
+              <TextArea
+                className="form-input"
+                name="ranges"
+                value={editForm.ranges}
+                onChange={onEditFormChange}
+                placeholder="e.g., 0–100 PSI, 0–10 bar"
+                rows={2}
               />
             </div>
             <div className="form-field">
@@ -874,15 +1135,47 @@ export default function EquipmentTable({ mode = 'admin' }) {
       <div className="table-wrapper">
         <div className="table-controls">
           <div className="search-section">
-            <Input.Search
-              allowClear
-              placeholder="Search by name, IDFN or location"
+            <AutoComplete
+              options={suggestions}
               value={q}
-              onChange={(e)=>setQ(e.target.value)}
-              onSearch={() => { setCurrentPage(1); fetchData({ page: 0, reset: true }) }}
-              enterButton
-              style={{minWidth:320}}
-            />
+              onChange={(val)=> setQ(val)}
+              onSearch={fetchSuggest}
+              onSelect={(val)=> { setQ(val); setCurrentPage(1); fetchData({ page: 0, reset: true }) }}
+              style={{ minWidth: 360 }}
+            >
+              <Input.Search
+                allowClear
+                loading={suggestLoading}
+                placeholder="Search by name or IDFN"
+                onSearch={() => { setCurrentPage(1); fetchData({ page: 0, reset: true }) }}
+                enterButton
+              />
+            </AutoComplete>
+          </div>
+          <div className="filter-section" style={{ marginLeft: 12 }}>
+            <AutoComplete
+              options={locOptions}
+              value={locationFilter}
+              onChange={(val)=> setLocationFilter(val)}
+              onSearch={fetchLocationSuggest}
+              onSelect={(val)=> { setLocationFilter(val); setCurrentPage(1); fetchData({ page: 0, reset: true, location: val }) }}
+              style={{ minWidth: 220 }}
+            >
+              <Input
+                allowClear
+                placeholder="Filter by location"
+                onChange={(e)=> {
+                  const v = e.target.value
+                  setLocationFilter(v)
+                  if ((v || '').trim() === '') {
+                    setCurrentPage(1)
+                    fetchData({ page: 0, reset: true, location: '' })
+                  }
+                }}
+                onPressEnter={()=> { setCurrentPage(1); fetchData({ page: 0, reset: true }) }}
+                suffix={locLoading ? <span style={{fontSize:12,color:'#999'}}>...</span> : null}
+              />
+            </AutoComplete>
           </div>
           <div className="action-buttons">
             <Button icon={<ReloadOutlined />} onClick={() => { setCurrentPage(1); fetchData({ page: 0, reset: true }) }}>
@@ -893,6 +1186,9 @@ export default function EquipmentTable({ mode = 'admin' }) {
                 {adding ? 'Close' : 'Add Tool'}
               </Button>
             )}
+            <Button type="primary" onClick={exportInventoryPDF} loading={exporting} disabled={exporting}>
+              {exporting ? 'Generating...' : 'Download PDF'}
+            </Button>
           </div>
         </div>
 
@@ -908,6 +1204,15 @@ export default function EquipmentTable({ mode = 'admin' }) {
             className="ant-table-striped professional-table"
             locale={{ emptyText: 'No equipment found' }}
             rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+            onChange={(_, __, sorter) => {
+              const s = Array.isArray(sorter) ? sorter[0] : sorter
+              const field = s && s.field ? s.field : null
+              const order = s && s.order ? (s.order === 'descend' ? 'desc' : 'asc') : null
+              setSortBy(field)
+              setSortDir(order)
+              setCurrentPage(1)
+              fetchData({ page: 0 })
+            }}
           />
         </div>
 

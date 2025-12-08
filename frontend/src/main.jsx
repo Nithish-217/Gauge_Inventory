@@ -16,9 +16,18 @@ import GaugeInventory from './pages/admin/GaugeInventory.jsx'
 import CalibrationPlanner from './pages/admin/CalibrationPlanner.jsx'
 import GaugeTracker from './pages/admin/GaugeTracker.jsx'
 import ReportManager from './pages/admin/ReportManager.jsx'
+import EmailConfig from './pages/admin/EmailConfig.jsx'
 import LabelManager from './pages/admin/LabelManager.jsx'
 import CreateUser from './pages/admin/CreateUser.jsx'
 import AdminHome from './pages/admin/Home.jsx'
+
+// Default API base for backend requests from admin pages
+try {
+  if (typeof window !== 'undefined') {
+    // Only set if not already provided elsewhere
+    window.__API_BASE__ = window.__API_BASE__ || 'http://localhost:5657'
+  }
+} catch {}
 
 const root = createRoot(document.getElementById('root'))
 root.render(
@@ -43,6 +52,7 @@ root.render(
               <Route path="gauge-tracker" element={<GaugeTracker />} />
               <Route path="report-manager" element={<ReportManager />} />
               <Route path="label-manager" element={<LabelManager />} />
+              <Route path="email-config" element={<EmailConfig />} />
             </Route>
             <Route path="operator" element={<OperatorDashboard />} >
               <Route index element={<Navigate to="gauge-inventory" replace />} />

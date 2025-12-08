@@ -12,45 +12,63 @@ export default function CalibrationPlanner() {
   const [mode, setMode] = React.useState('month') // 'month' | 'year'
   const [requestedGaugeIds, setRequestedGaugeIds] = React.useState(new Set()) // Set of gauge_ids that have been requested
   
-  // Calculate KPIs for the selected month
+  // Calculate KPIs for the selected period
   const kpis = React.useMemo(() => {
     const today = dayjs()
     const selectedMonth = value.month()
     const selectedYear = value.year()
-    
+
     let total = 0, completed = 0, due = 0, missed = 0
-    
-    items.forEach(item => {
-      // Count items with calibration due in the selected month
-      if (item.calibration_due) {
-        const dueDate = dayjs(item.calibration_due)
-        if (dueDate.month() === selectedMonth && dueDate.year() === selectedYear) {
-          due++
-          if (dueDate.isBefore(today, 'day')) missed++
+
+    if (mode === 'year') {
+      items.forEach(item => {
+        // Completed calibrations within the selected year
+        if (item.date_of_last_calibration) {
+          const lastCalDate = dayjs(item.date_of_last_calibration)
+          if (lastCalDate.year() === selectedYear) {
+            completed++
+          }
         }
-      }
-      
-      // Count items with last calibration in the selected month
-      if (item.date_of_last_calibration) {
-        const lastCalDate = dayjs(item.date_of_last_calibration)
-        if (lastCalDate.month() === selectedMonth && lastCalDate.year() === selectedYear) {
-          completed++
+        // Due within the selected year
+        if (item.calibration_due) {
+          const dueDate = dayjs(item.calibration_due)
+          if (dueDate.year() === selectedYear) {
+            due++
+            if (dueDate.isBefore(today, 'day')) missed++
+          }
         }
-      }
-      
-      // Total items that have any calibration activity in the selected month
-      if ((item.date_of_last_calibration && 
-           dayjs(item.date_of_last_calibration).month() === selectedMonth && 
-           dayjs(item.date_of_last_calibration).year() === selectedYear) ||
-          (item.calibration_due && 
-           dayjs(item.calibration_due).month() === selectedMonth && 
-           dayjs(item.calibration_due).year() === selectedYear)) {
-        total++
-      }
-    })
-    
+        // Total items that have any calibration activity in the selected year
+        const hasLastInYear = item.date_of_last_calibration && dayjs(item.date_of_last_calibration).year() === selectedYear
+        const hasDueInYear = item.calibration_due && dayjs(item.calibration_due).year() === selectedYear
+        if (hasLastInYear || hasDueInYear) total++
+      })
+    } else {
+      // Month mode (default): aggregate for selected month
+      items.forEach(item => {
+        // Due within the selected month
+        if (item.calibration_due) {
+          const dueDate = dayjs(item.calibration_due)
+          if (dueDate.month() === selectedMonth && dueDate.year() === selectedYear) {
+            due++
+            if (dueDate.isBefore(today, 'day')) missed++
+          }
+        }
+        // Completed within the selected month
+        if (item.date_of_last_calibration) {
+          const lastCalDate = dayjs(item.date_of_last_calibration)
+          if (lastCalDate.month() === selectedMonth && lastCalDate.year() === selectedYear) {
+            completed++
+          }
+        }
+        // Total having any activity in the selected month
+        const hasLastInMonth = item.date_of_last_calibration && dayjs(item.date_of_last_calibration).month() === selectedMonth && dayjs(item.date_of_last_calibration).year() === selectedYear
+        const hasDueInMonth = item.calibration_due && dayjs(item.calibration_due).month() === selectedMonth && dayjs(item.calibration_due).year() === selectedYear
+        if (hasLastInMonth || hasDueInMonth) total++
+      })
+    }
+
     return { total, completed, due, missed }
-  }, [items, value])
+  }, [items, value, mode])
 
   const limit = 200
 
@@ -192,6 +210,22 @@ export default function CalibrationPlanner() {
     )
   }
 
+  const dateFullCellRender = (d) => {
+    // Only show dates of the current panel month in month view
+    if (mode === 'month') {
+      const sameMonth = d.month() === value.month() && d.year() === value.year()
+      if (!sameMonth) return <div />
+      return (
+        <div className="ant-picker-calendar-date">
+          <div className="ant-picker-calendar-date-value">{d.date()}</div>
+          <div className="ant-picker-calendar-date-content">{dateCellRender(d)}</div>
+        </div>
+      )
+    }
+    // For year view use default rendering
+    return undefined
+  }
+
   const monthCellRender = (value) => {
     // year view: show counts for month
     const ym = value.format('YYYY-MM')
@@ -309,6 +343,7 @@ export default function CalibrationPlanner() {
             onChange={(v)=>setValue(v)}
             fullscreen
             dateCellRender={dateCellRender}
+            dateFullCellRender={dateFullCellRender}
             monthCellRender={monthCellRender}
             headerRender={({ value: val, onChange }) => {
               const year = val.year()

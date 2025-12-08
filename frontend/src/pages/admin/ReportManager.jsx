@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Table, Button, Space, Input, DatePicker, InputNumber, Upload, message, Typography, Tag, Modal, Form, Pagination } from 'antd'
+import { Table, Button, Space, Input, DatePicker, InputNumber, Upload, message, Typography, Tag, Modal, Form, Pagination, AutoComplete } from 'antd'
 import { ReloadOutlined, UploadOutlined, DownloadOutlined, EyeOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 
@@ -14,10 +14,15 @@ export default function ReportManager() {
   const [currentPage, setCurrentPage] = useState(1)
   const [totalItems, setTotalItems] = useState(0)
   const [pageSize, setPageSize] = useState(10)
+  const [sortBy, setSortBy] = useState(null)
+  const [sortDir, setSortDir] = useState(null)
   const [pdfViewerOpen, setPdfViewerOpen] = useState(false)
   const [pdfViewerUrl, setPdfViewerUrl] = useState(null)
   const [pdfViewerTitle, setPdfViewerTitle] = useState('')
   const scrollRef = useRef(null)
+  const bcRef = useRef(null)
+  const [suggestions, setSuggestions] = useState([])
+  const [suggestLoading, setSuggestLoading] = useState(false)
 
   // Ensure form fields are prefilled when modal opens
   useEffect(() => {
@@ -66,6 +71,8 @@ export default function ReportManager() {
       const offset = cur * limit
       const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
       if (q?.trim()) params.set('q', q.trim())
+      if (sortBy) params.set('sort_by', sortBy)
+      if (sortDir) params.set('sort_dir', sortDir)
       // Try reports endpoint first
       let items = []
       let total = 0
@@ -108,13 +115,44 @@ export default function ReportManager() {
     }
   }
 
-  useEffect(() => { fetchRows({ page: currentPage - 1 }) }, [currentPage, pageSize])
+  useEffect(() => { fetchRows({ page: currentPage - 1 }) }, [currentPage, pageSize, sortBy, sortDir])
+
+  useEffect(() => {
+    try { bcRef.current = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('equipment-events') : null } catch { bcRef.current = null }
+    const onMsg = (ev) => {
+      try { if (ev && ev.data && ev.data.type === 'equipment:changed') { setCurrentPage(1); fetchRows({ page: 0 }) } } catch {}
+    }
+    try { bcRef.current && bcRef.current.addEventListener('message', onMsg) } catch {}
+    return () => { try { bcRef.current && bcRef.current.removeEventListener('message', onMsg); bcRef.current.close() } catch {} }
+  }, [])
 
   const handlePageChange = (page, size) => {
     setCurrentPage(page)
     if (size !== pageSize) {
       setPageSize(size)
     }
+  }
+
+  // Typeahead: fetch suggestions from backend
+  const fetchSuggest = async (text) => {
+    const s = (text || '').trim()
+    if (!s) { setSuggestions([]); return }
+    setSuggestLoading(true)
+    try {
+      const res = await fetch(`/equipment/suggest?q=${encodeURIComponent(s)}&limit=10`)
+      const data = await res.json().catch(()=>[])
+      const opts = Array.isArray(data) ? data.map((it, idx) => ({
+        value: it.value,
+        label: (
+          <div key={`${it.type}-${idx}`} style={{ display:'flex', justifyContent:'space-between' }}>
+            <span>{it.value}</span>
+            <Tag color={it.type === 'idfn' ? 'blue' : 'default'} style={{ marginLeft: 8 }}>{it.type}</Tag>
+          </div>
+        )
+      })) : []
+      setSuggestions(opts)
+    } catch { setSuggestions([]) }
+    finally { setSuggestLoading(false) }
   }
 
   const onUpload = async (row, state) => {
@@ -279,14 +317,22 @@ export default function ReportManager() {
       <div className="table-wrapper">
         <div className="table-controls">
           <div className="search-section">
-            <Input.Search
-              placeholder="Search by name, IDFN, or location"
+            <AutoComplete
+              options={suggestions}
               value={q}
-              onChange={(e)=>setQ(e.target.value)}
-              onSearch={()=>{ setCurrentPage(1); fetchRows({ page:0, reset: true }) }}
-              style={{ width: 320 }}
-              allowClear
-            />
+              onChange={(val)=> setQ(val)}
+              onSearch={fetchSuggest}
+              onSelect={(val)=> { setQ(val); setCurrentPage(1); fetchRows({ page:0, reset: true }) }}
+              style={{ minWidth: 360 }}
+            >
+              <Input.Search
+                allowClear
+                loading={suggestLoading}
+                placeholder="Search by name, IDFN, or location"
+                onSearch={()=>{ setCurrentPage(1); fetchRows({ page:0, reset: true }) }}
+                enterButton
+              />
+            </AutoComplete>
           </div>
           <div className="action-buttons">
             <Button 
@@ -309,6 +355,15 @@ export default function ReportManager() {
             className="ant-table-striped professional-table"
             rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
             scroll={{ x: 1200 }}
+            onChange={(_, __, sorter) => {
+              const s = Array.isArray(sorter) ? sorter[0] : sorter
+              const field = s && s.field ? s.field : null
+              const order = s && s.order ? (s.order === 'descend' ? 'desc' : 'asc') : null
+              setSortBy(field)
+              setSortDir(order)
+              setCurrentPage(1)
+              fetchRows({ page: 0 })
+            }}
           />
         </div>
 

@@ -1,7 +1,8 @@
 from passlib.context import CryptContext
 
-# Use pbkdf2_sha256 to avoid bcrypt backend issues on some Windows/FIPS setups
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+# Support verifying legacy bcrypt hashes while preferring pbkdf2_sha256 for new hashes
+# pbkdf2_sha256 will be used for get_password_hash; bcrypt remains for verifying old passwords
+pwd_context = CryptContext(schemes=["pbkdf2_sha256", "bcrypt"], deprecated="auto")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:

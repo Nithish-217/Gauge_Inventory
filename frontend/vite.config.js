@@ -8,48 +8,53 @@ export default defineConfig({
     host: 'localhost',
     open: false,
     proxy: {
+      '/api': {
+        target: 'http://localhost:5756',
+        changeOrigin: true,
+        secure: false
+      },
       '/auth': {
-        target: 'http://localhost:5657',
+        target: 'http://localhost:5756',
         changeOrigin: true,
         secure: false
       },
       '/users': {
-        target: 'http://localhost:5657',
+        target: 'http://localhost:5756',
         changeOrigin: true,
         secure: false
       },
       '/equipment': {
-        target: 'http://localhost:5657',
+        target: 'http://localhost:5756',
         changeOrigin: true,
         secure: false
       },
       '/gauge-tracker': {
-        target: 'http://localhost:5657',
+        target: 'http://localhost:5756',
         changeOrigin: true,
         secure: false
       },
       '/requests': {
-        target: 'http://localhost:5657',
+        target: 'http://localhost:5756',
         changeOrigin: true,
         secure: false
       },
       '/barcode': {
-        target: 'http://localhost:5657',
+        target: 'http://localhost:5756',
         changeOrigin: true,
         secure: false
       },
       '/qrcode': {
-        target: 'http://localhost:5657',
+        target: 'http://localhost:5756',
         changeOrigin: true,
         secure: false
       },
       '/reports': {
-        target: 'http://localhost:5657',
+        target: 'http://localhost:5756',
         changeOrigin: true,
         secure: false
       },
       '/reminders': {
-        target: 'http://localhost:5657',
+        target: 'http://localhost:5756',
         changeOrigin: true,
         secure: false
       },

@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Table, Button, Space, message, Tag, Popover, Select, DatePicker, Pagination } from 'antd'
+import { Table, Button, Space, message, Tag, Popover, Select, DatePicker, Pagination, Input, AutoComplete } from 'antd'
+import { loadJsPDF, makeHeaderFooter, formatNow } from '../../utils/pdfExport.js'
+
 import { FilterOutlined, ReloadOutlined, CheckOutlined, CloseOutlined, UndoOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 
@@ -9,10 +11,16 @@ export default function GaugeTracker() {
   const [currentPage, setCurrentPage] = useState(1)
   const [totalItems, setTotalItems] = useState(0)
   const [pageSize, setPageSize] = useState(10)
+  const [sortBy, setSortBy] = useState(null)
+  const [sortDir, setSortDir] = useState(null)
   const scrollRef = useRef(null)
   const [filterOpen, setFilterOpen] = useState(false)
   const [statusFilter, setStatusFilter] = useState(undefined) // 'requested' | 'accepted' | 'rejected' | 'returned'
-  const [dateFilter, setDateFilter] = useState(null) // dayjs
+  const [dateFilter, setDateFilter] = useState(null) // [dayjs, dayjs]
+  const [nameFilter, setNameFilter] = useState('') // equipment name contains
+  const [nameOptions, setNameOptions] = useState([]) // suggestions for equipment names
+  const nameFetchRef = useRef(0)
+  const [exporting, setExporting] = useState(false)
 
   const limit = pageSize
   const fetchRows = async (opts = {}) => {
@@ -20,17 +28,57 @@ export default function GaugeTracker() {
     try {
       const cur = typeof opts.page === 'number' ? opts.page : (currentPage - 1)
       const params = new URLSearchParams({ limit: String(limit), offset: String(cur * limit) })
+      if (sortBy) params.set('sort_by', sortBy)
+      if (sortDir) params.set('sort_dir', sortDir)
+      // Date range filter
+      if (Array.isArray(dateFilter) && dateFilter[0] && dateFilter[1]) {
+        params.set('from_date', dateFilter[0].format('YYYY-MM-DD'))
+        params.set('to_date', dateFilter[1].format('YYYY-MM-DD'))
+      }
+      // Equipment name contains (server-side)
+      if (nameFilter && nameFilter.trim().length > 0) {
+        params.set('name', nameFilter.trim())
+      }
       const res = await fetch(`/gauge-tracker?${params.toString()}`)
+      if (!res.ok) {
+        try {
+          const txt = await res.text()
+          message.error(txt || 'Failed to load gauge tracker')
+        } catch {
+          message.error('Failed to load gauge tracker')
+        }
+        setRows([])
+        setTotalItems(0)
+        return
+      }
       const data = await res.json()
       const batch = Array.isArray(data) ? data.map(r=>({ ...r, key: r.id })) : []
-      setTotalItems(batch.length) // Note: This API doesn't return total count
+      const hdr = res.headers ? res.headers.get('X-Total-Count') : null
+      const total = hdr ? Number(hdr) : batch.length
+      setTotalItems(Number.isFinite(total) ? total : batch.length)
       setRows(batch)
     } finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => { fetchRows({ page: currentPage - 1 }) }, [currentPage, pageSize])
+  useEffect(() => { fetchRows({ page: currentPage - 1 }) }, [currentPage, pageSize, sortBy, sortDir, dateFilter, nameFilter])
+
+  const fetchNameSuggest = async (q) => {
+    const cur = ++nameFetchRef.current
+    try {
+      const qs = new URLSearchParams({ q: q || '', limit: '10' }).toString()
+      const res = await fetch(`/equipment/suggest?${qs}`)
+      const data = await res.json().catch(()=>[])
+      if (nameFetchRef.current !== cur) return
+      const opts = (Array.isArray(data) ? data : [])
+        .filter(s => s && (s.type === 'name') && typeof s.value === 'string')
+        .map(s => ({ value: s.value }))
+      setNameOptions(opts)
+    } catch {
+      if (nameFetchRef.current === cur) setNameOptions([])
+    }
+  }
 
   const onAccept = async (row) => {
     try {
@@ -66,6 +114,17 @@ export default function GaugeTracker() {
   const columns = useMemo(() => [
     { title: 'Sl. No.', key: 'slno', width: 70, render:(_, __, index)=> index + 1 },
     { title: 'Equipment', dataIndex: 'name_of_the_equipment', key: 'name_of_the_equipment', width: 220, ellipsis: true },
+    {
+      title: 'Range',
+      dataIndex: 'ranges',
+      key: 'ranges',
+      width: 200,
+      ellipsis: true,
+      render: (v) => {
+        const arr = Array.isArray(v) ? v : []
+        return arr.length ? <span title={arr.join(', ')}>{arr.join(', ')}</span> : <span style={{ color: '#999' }}>—</span>
+      }
+    },
     { 
       title: 'IDFN', 
       dataIndex: 'idfn_no', 
@@ -189,13 +248,17 @@ export default function GaugeTracker() {
   const filteredRows = useMemo(() => {
     return rows.filter(r => {
       const sOk = statusFilter ? String(r.status||'').toLowerCase() === String(statusFilter).toLowerCase() : true
-      const dOk = dateFilter ? (()=>{
-        try {
-          // Compare against requested_at by default
-          const dt = r.requested_at ? dayjs(r.requested_at) : null
-          return dt ? dt.isSame(dateFilter, 'day') : false
-        } catch { return false }
-      })() : true
+      const dOk = Array.isArray(dateFilter) && dateFilter[0] && dateFilter[1]
+        ? (() => {
+            try {
+              const dt = r.requested_at ? dayjs(r.requested_at) : null
+              if (!dt) return false
+              const fromOk = dt.isSame(dateFilter[0], 'day') || dt.isAfter(dateFilter[0], 'day')
+              const toOk = dt.isSame(dateFilter[1], 'day') || dt.isBefore(dateFilter[1], 'day')
+              return fromOk && toOk
+            } catch { return false }
+          })()
+        : true
       return sOk && dOk
     })
   }, [rows, statusFilter, dateFilter])
@@ -204,6 +267,90 @@ export default function GaugeTracker() {
     setCurrentPage(page)
     if (size !== pageSize) {
       setPageSize(size)
+    }
+  }
+
+  const exportTrackerPDF = async () => {
+    try {
+      setExporting(true)
+      // Fetch all rows from server (server filters: date/name; status filter is client-side here)
+      const jsPDF = await loadJsPDF()
+      const all = []
+      let offset = 0
+      const pageLimit = 500
+      for (let i = 0; i < 200; i++) {
+        const params = new URLSearchParams({ limit: String(pageLimit), offset: String(offset) })
+        // sort recent first for export
+        params.set('sort_by', 'requested_at')
+        params.set('sort_dir', 'desc')
+        if (Array.isArray(dateFilter) && dateFilter[0] && dateFilter[1]) {
+          params.set('from_date', dateFilter[0].format('YYYY-MM-DD'))
+          params.set('to_date', dateFilter[1].format('YYYY-MM-DD'))
+        }
+        if (nameFilter && nameFilter.trim()) params.set('name', nameFilter.trim())
+        const res = await fetch(`/gauge-tracker?${params.toString()}`)
+        if (!res.ok) break
+        const data = await res.json().catch(()=>[])
+        const arr = Array.isArray(data) ? data : []
+        all.push(...arr)
+        if (arr.length < pageLimit) break
+        offset += pageLimit
+      }
+      // Apply client-side status/date filter to match on-screen filteredRows
+      const subset = all.filter(r => {
+        const sOk = statusFilter ? String(r.status||'').toLowerCase() === String(statusFilter).toLowerCase() : true
+        const dOk = Array.isArray(dateFilter) && dateFilter[0] && dateFilter[1]
+          ? (() => {
+              try {
+                const dt = r.requested_at ? dayjs(r.requested_at) : null
+                if (!dt) return false
+                const fromOk = dt.isSame(dateFilter[0], 'day') || dt.isAfter(dateFilter[0], 'day')
+                const toOk = dt.isSame(dateFilter[1], 'day') || dt.isBefore(dateFilter[1], 'day')
+                return fromOk && toOk
+              } catch { return false }
+            })()
+          : true
+        return sOk && dOk
+      })
+      if (subset.length === 0) { message.info('No records to export'); return }
+      const doc = new jsPDF({ orientation: 'landscape' })
+      // Filter summary
+      const filters = []
+      if (statusFilter) filters.push(`Status=${String(statusFilter).toUpperCase()}`)
+      if (Array.isArray(dateFilter) && dateFilter[0] && dateFilter[1]) filters.push(`Date Range=${dateFilter[0].format('YYYY-MM-DD')}–${dateFilter[1].format('YYYY-MM-DD')}`)
+      if (nameFilter && nameFilter.trim()) filters.push(`Name~"${nameFilter.trim()}"`)
+      if (filters.length) {
+        doc.setFontSize(9)
+        doc.text(`Filters: ${filters.join(', ')}`, 14, 22)
+      }
+      const head = [[
+        'Equipment', 'Range', 'IDFN', 'Location', 'Make/Model', 'Requested By', 'Requested At', 'Status', 'Accepted By', 'Accepted At', 'Returned By', 'Returned At', 'Purpose', 'Return Condition'
+      ]]
+      const body = subset.map(r => [
+        String(r.name_of_the_equipment ?? ''),
+        (Array.isArray(r.ranges) && r.ranges.length ? r.ranges.join(', ') : ''),
+        String(r.idfn_no ?? ''),
+        String(r.location ?? ''),
+        String(r.make_model ?? ''),
+        String(r.requested_by ?? ''),
+        r.requested_at ? new Date(r.requested_at).toLocaleString() : '',
+        String((r.status||'').toUpperCase()),
+        String(r.accepted_by ?? ''),
+        r.accepted_at ? new Date(r.accepted_at).toLocaleString() : '',
+        String(r.returned_by ?? ''),
+        r.returned_at ? new Date(r.returned_at).toLocaleString() : '',
+        String(r.purpose ?? ''),
+        r.return_status ? (r.return_status === 'Custom' && r.return_remarks ? r.return_remarks : r.return_status) : (r.return_remarks || '')
+      ])
+      doc.autoTable({ head, body, startY: filters.length ? 26 : 24, styles: { fontSize: 8 } })
+      makeHeaderFooter(doc, 'Gauge Tracker')
+      const anyFilter = Boolean(statusFilter) || (Array.isArray(dateFilter) && dateFilter[0] && dateFilter[1]) || (nameFilter && nameFilter.trim())
+      const fname = anyFilter ? `gauge-tracker_filtered_${formatNow()}.pdf` : `gauge-tracker_all_${formatNow()}.pdf`
+      doc.save(fname)
+    } catch (e) {
+      message.error('Failed to generate PDF')
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -222,7 +369,20 @@ export default function GaugeTracker() {
               open={filterOpen}
               onOpenChange={setFilterOpen}
               content={(
-                <div style={{display:'grid', gap:8, minWidth:240}}>
+                <div style={{display:'grid', gap:8, minWidth:260}}>
+                  <div>
+                    <div style={{fontSize:12, color:'#666'}}>Equipment name</div>
+                    <AutoComplete
+                      value={nameFilter}
+                      options={nameOptions}
+                      onSearch={(text)=>{ setNameFilter(text); fetchNameSuggest(text) }}
+                      onSelect={(v)=>{ setNameFilter(v) }}
+                      allowClear
+                      style={{ width: '100%' }}
+                      placeholder="Type to search equipment names"
+                      filterOption={false}
+                    />
+                  </div>
                   <div>
                     <div style={{fontSize:12, color:'#666'}}>Status</div>
                     <Select
@@ -230,44 +390,55 @@ export default function GaugeTracker() {
                       placeholder="Select status"
                       value={statusFilter}
                       onChange={(v)=>setStatusFilter(v)}
-                      options={[
-                        {label:'Requested', value:'requested'},
-                        {label:'Accepted', value:'accepted'},
-                        {label:'Rejected', value:'rejected'},
-                        {label:'Returned', value:'returned'},
-                      ]}
                       style={{ width: '100%' }}
+                      options={[
+                        { label: 'Requested', value: 'requested' },
+                        { label: 'Accepted', value: 'accepted' },
+                        { label: 'Rejected', value: 'rejected' },
+                        { label: 'Returned', value: 'returned' },
+                      ]}
                     />
                   </div>
                   <div>
-                    <div style={{fontSize:12, color:'#666'}}>Date</div>
-                    <DatePicker
-                      allowClear
-                      value={dateFilter}
-                      onChange={(d)=>setDateFilter(d)}
-                      style={{ width: '100%' }}
-                    />
+                    <div style={{fontSize:12, color:'#666'}}>Requested date range</div>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <DatePicker
+                        style={{ width: '50%' }}
+                        placeholder="From date"
+                        value={Array.isArray(dateFilter) ? dateFilter[0] : null}
+                        onChange={(d)=> setDateFilter(d ? [d, Array.isArray(dateFilter)? dateFilter[1] : null] : (Array.isArray(dateFilter)? [null, dateFilter[1]] : null))}
+                        allowClear
+                      />
+                      <DatePicker
+                        style={{ width: '50%' }}
+                        placeholder="To date"
+                        value={Array.isArray(dateFilter) ? dateFilter[1] : null}
+                        onChange={(d)=> setDateFilter(d ? [Array.isArray(dateFilter)? dateFilter[0] : null, d] : (Array.isArray(dateFilter)? [dateFilter[0], null] : null))}
+                        allowClear
+                      />
+                    </Space.Compact>
                   </div>
-                  <div style={{display:'flex', justifyContent:'flex-end', gap:8}}>
-                    <Button onClick={()=>{ setStatusFilter(undefined); setDateFilter(null) }}>Clear</Button>
-                    <Button type="primary" onClick={()=>setFilterOpen(false)}>Apply</Button>
-                  </div>
+                  <Space>
+                    <Button size="small" onClick={()=>{ setStatusFilter(undefined); setDateFilter(null); setNameFilter('') }}>Reset</Button>
+                    <Button size="small" type="primary" onClick={()=>{ setCurrentPage(1); fetchRows({ page: 0 }) }}>Apply</Button>
+                  </Space>
                 </div>
               )}
             >
-              <Button icon={<FilterOutlined />}>Filter</Button>
+              <Button icon={<FilterOutlined />}>
+                Filters
+              </Button>
             </Popover>
-          </div>
-          <div className="action-buttons">
-            <Button 
-              icon={<ReloadOutlined />} 
-              onClick={() => { setCurrentPage(1); fetchRows({ page:0, reset:true }) }}
-            >
-              Refresh
-            </Button>
-            <Button
-              danger
-              onClick={async ()=>{
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+              <Button
+                icon={<ReloadOutlined />}
+                onClick={() => { setCurrentPage(1); fetchRows({ page:0, reset:true }) }}
+              >
+                Refresh
+              </Button>
+              <Button
+                danger
+                onClick={async ()=>{
                 try {
                   const res = await fetch('/admin/free-all-tools', { method: 'POST' })
                   if (!res.ok) throw new Error(await res.text() || 'Failed to reset')
@@ -277,10 +448,14 @@ export default function GaugeTracker() {
                 } catch (e) {
                   message.error(typeof e?.message === 'string' ? e.message : 'Failed to reset')
                 }
-              }}
-            >
-              Reset: Free All Tools
-            </Button>
+                }}
+              >
+                Reset: Free All Tools
+              </Button>
+              <Button size="small" type="primary" onClick={exportTrackerPDF} loading={exporting} disabled={exporting} style={{ padding: '0 8px', width: 'auto', flex: '0 0 auto', whiteSpace: 'nowrap' }}>
+                {exporting ? 'Generating...' : 'Download PDF'}
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -295,6 +470,15 @@ export default function GaugeTracker() {
             className="ant-table-striped professional-table"
             rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
             scroll={{ x: 1000 }}
+            onChange={(_, __, sorter) => {
+              const s = Array.isArray(sorter) ? sorter[0] : sorter
+              const field = s && s.field ? s.field : null
+              const order = s && s.order ? (s.order === 'descend' ? 'desc' : 'asc') : null
+              setSortBy(field)
+              setSortDir(order)
+              setCurrentPage(1)
+              fetchRows({ page: 0 })
+            }}
           />
         </div>
 

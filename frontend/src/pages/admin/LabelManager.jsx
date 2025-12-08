@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Card, Button, Space, Typography, Table, Input, message, Modal, Image, Tag, Pagination } from 'antd'
+import { Card, Button, Space, Typography, Table, Input, message, Modal, Image, Tag, Pagination, AutoComplete } from 'antd'
 import { ReloadOutlined, QrcodeOutlined, DownloadOutlined, EyeOutlined } from '@ant-design/icons'
 
 export default function LabelManager() {
@@ -9,7 +9,12 @@ export default function LabelManager() {
   const [currentPage, setCurrentPage] = useState(1)
   const [totalItems, setTotalItems] = useState(0)
   const [pageSize, setPageSize] = useState(10)
+  const [sortBy, setSortBy] = useState(null)
+  const [sortDir, setSortDir] = useState(null)
   const [preview, setPreview] = useState({ open: false, idfn: '', imgUrl: '' })
+  const bcRef = useRef(null)
+  const [suggestions, setSuggestions] = useState([])
+  const [suggestLoading, setSuggestLoading] = useState(false)
 
   async function fetchEquipment(params = {}) {
     setLoading(true)
@@ -20,6 +25,8 @@ export default function LabelManager() {
     qs.set('limit', String(limit))
     qs.set('offset', String(offset))
     if (q?.trim()) qs.set('q', q.trim())
+    if (sortBy) qs.set('sort_by', sortBy)
+    if (sortDir) qs.set('sort_dir', sortDir)
     try {
       const res = await fetch(`/equipment?${qs.toString()}`)
       const json = await res.json()
@@ -35,11 +42,42 @@ export default function LabelManager() {
 
   useEffect(() => {
     fetchEquipment({ current: currentPage, pageSize: pageSize })
-  }, [currentPage, pageSize])
+  }, [currentPage, pageSize, sortBy, sortDir])
+
+  useEffect(() => {
+    try { bcRef.current = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('equipment-events') : null } catch { bcRef.current = null }
+    const onMsg = (ev) => {
+      try { if (ev && ev.data && ev.data.type === 'equipment:changed') { setCurrentPage(1); fetchEquipment({ current: 1, pageSize }) } } catch {}
+    }
+    try { bcRef.current && bcRef.current.addEventListener('message', onMsg) } catch {}
+    return () => { try { bcRef.current && bcRef.current.removeEventListener('message', onMsg); bcRef.current.close() } catch {} }
+  }, [])
 
   const handlePageChange = (page, size) => {
     setCurrentPage(page)
     setPageSize(size)
+  }
+
+  // Typeahead: fetch suggestions from backend
+  const fetchSuggest = async (text) => {
+    const s = (text || '').trim()
+    if (!s) { setSuggestions([]); return }
+    setSuggestLoading(true)
+    try {
+      const res = await fetch(`/equipment/suggest?q=${encodeURIComponent(s)}&limit=10`)
+      const data = await res.json().catch(()=>[])
+      const opts = Array.isArray(data) ? data.map((it, idx) => ({
+        value: it.value,
+        label: (
+          <div key={`${it.type}-${idx}`} style={{ display:'flex', justifyContent:'space-between' }}>
+            <span>{it.value}</span>
+            <Tag color={it.type === 'idfn' ? 'blue' : 'default'} style={{ marginLeft: 8 }}>{it.type}</Tag>
+          </div>
+        )
+      })) : []
+      setSuggestions(opts)
+    } catch { setSuggestions([]) }
+    finally { setSuggestLoading(false) }
   }
 
   const openPreview = (record) => {
@@ -145,14 +183,21 @@ export default function LabelManager() {
       <div className="table-wrapper">
         <div className="table-controls">
           <div className="search-section">
-            <Input.Search
-              placeholder="Search by name, IDFN, or location"
+            <AutoComplete
+              options={suggestions}
               value={q}
-              onChange={(e) => setQ(e.target.value)}
-              onSearch={() => { setCurrentPage(1); fetchEquipment({ current: 1, pageSize: pageSize, reset: true }) }}
-              allowClear
-              style={{ width: 320 }}
-            />
+              onChange={(val)=> setQ(val)}
+              onSearch={fetchSuggest}
+              onSelect={(val)=> { setQ(val); setCurrentPage(1); fetchEquipment({ current: 1, pageSize, reset: true }) }}
+              style={{ minWidth: 360 }}
+            >
+              <Input.Search
+                allowClear
+                placeholder="Search by name, IDFN, or location"
+                onSearch={() => { setCurrentPage(1); fetchEquipment({ current: 1, pageSize, reset: true }) }}
+                enterButton
+              />
+            </AutoComplete>
           </div>
           <div className="action-buttons">
             <Button 
@@ -176,6 +221,15 @@ export default function LabelManager() {
             className="ant-table-striped professional-table"
             rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
             scroll={{ x: 1000 }}
+            onChange={(_, __, sorter) => {
+              const s = Array.isArray(sorter) ? sorter[0] : sorter
+              const field = s && s.field ? s.field : null
+              const order = s && s.order ? (s.order === 'descend' ? 'desc' : 'asc') : null
+              setSortBy(field)
+              setSortDir(order)
+              setCurrentPage(1)
+              fetchEquipment({ current: 1, pageSize })
+            }}
           />
         </div>
 

@@ -29,11 +29,15 @@ export default function App() {
     }
     try {
       setLoading(true)
+      // Add a timeout so the UI doesn't keep loading forever if the server is down
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 12000)
       const res = await fetch('/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: username.trim(), password: String(password).trim() })
-      })
+        body: JSON.stringify({ username: username.trim(), password: String(password).trim() }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId))
       if (!res.ok) {
         // try to parse structured error first
         try {
@@ -78,7 +82,11 @@ export default function App() {
         throw new Error(data?.message || 'Invalid credentials')
       }
     } catch (err) {
-      setError(typeof err?.message === 'string' ? err.message : 'Login failed')
+      if (err?.name === 'AbortError') {
+        setError('Unable to reach server. Please ensure the backend is running and try again.')
+      } else {
+        setError(typeof err?.message === 'string' ? err.message : 'Login failed')
+      }
     } finally {
       setLoading(false)
     }
