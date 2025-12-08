@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Table, Button, Input, InputNumber, Space, message, Modal, Pagination, AutoComplete, Tag } from 'antd'
-import { loadJsPDF, makeHeaderFooter, formatNow } from '../utils/pdfExport.js'
+import { loadJsPDF, buildAutoTablePageHook, formatNow } from '../utils/pdfExport.js'
 import { ReloadOutlined, PlusOutlined, EditOutlined, DeleteOutlined, ShoppingCartOutlined } from '@ant-design/icons'
 
 const { TextArea } = Input
@@ -764,8 +764,14 @@ export default function EquipmentTable({ mode = 'admin' }) {
         r.calibration_due ? new Date(r.calibration_due).toLocaleDateString() : '',
         String(r.pcr_number ?? '')
       ])
-      doc.autoTable({ head, body, startY: 24, styles: { fontSize: 8 } })
-      makeHeaderFooter(doc, 'Gauge Inventory')
+      doc.autoTable({ 
+        head, 
+        body, 
+        styles: { fontSize: 8 },
+        margin: { top: 24, bottom: 14, left: 14, right: 14 },
+        // Reserve top/bottom margins and draw header/footer per page without overlapping rows
+        didDrawPage: buildAutoTablePageHook(doc, 'Gauge Inventory'),
+      })
       const fname = `gauge-inventory_${formatNow()}.pdf`
       doc.save(fname)
     } catch (e) {
