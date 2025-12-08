@@ -3379,11 +3379,8 @@ def equipment_import_commit(
         if p is not None:
             existing = db.execute(text("SELECT * FROM public.equipment_used_for_calibration WHERE pcr_number = :p LIMIT 1"), {"p": int(p)}).mappings().first()
 
-        if existing is not None and act == "discard":
-            skipped += 1
-            db.execute(text(
-                "INSERT INTO public.audit_import_rows (import_id, row_index, pcr_number, action, message, previous_snapshot, new_snapshot) VALUES (:iid, :idx, :pcr, 'skipped', 'discarded by decision', CAST(:prev AS JSONB), NULL)"
-            ), {"iid": import_id, "idx": idx, "pcr": int(p), "prev": json.dumps(dict(existing))})
+        # Treat 'discard' as cancel: no DB changes, no audit, no counters
+        if act == "discard":
             continue
 
         try:
@@ -3435,7 +3432,7 @@ def equipment_import_commit(
                     skipped += 1
                     db.execute(text(
                         "INSERT INTO public.audit_import_rows (import_id, row_index, pcr_number, action, message, previous_snapshot, new_snapshot) VALUES (:iid, :idx, :pcr, 'skipped', 'conflict without override', CAST(:prev AS JSONB), CAST(:new AS JSONB))"
-                    ), {"iid": import_id, "idx": idx, "pcr": int(p), "prev": json.dumps(dict(existing)), "new": json.dumps({k: v.get(k) for k in v if not k.startswith("_")})})
+                    ), {"iid": import_id, "idx": idx, "pcr": int(p), "prev": json.dumps(dict(existing), default=str), "new": json.dumps({k: v.get(k) for k in v if not k.startswith("_")})})
                 else:
                     # UPDATE existing by pcr_number
                     db.execute(text(
@@ -3469,7 +3466,7 @@ def equipment_import_commit(
                     updated += 1
                     db.execute(text(
                         "INSERT INTO public.audit_import_rows (import_id, row_index, pcr_number, action, message, previous_snapshot, new_snapshot) VALUES (:iid, :idx, :pcr, 'updated', NULL, CAST(:prev AS JSONB), CAST(:new AS JSONB))"
-                    ), {"iid": import_id, "idx": idx, "pcr": int(p), "prev": json.dumps(dict(existing)), "new": json.dumps({k: v.get(k) for k in v if not k.startswith("_")})})
+                    ), {"iid": import_id, "idx": idx, "pcr": int(p), "prev": json.dumps(dict(existing), default=str), "new": json.dumps({k: v.get(k) for k in v if not k.startswith("_")})})
         except IntegrityError as e:
             err_count += 1
             db.rollback()
