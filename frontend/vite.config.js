@@ -58,9 +58,20 @@ export default defineConfig({
         changeOrigin: true,
         secure: false
       },
+      '/analytics': {
+        target: 'http://localhost:5756',
+        changeOrigin: true,
+        secure: false
+      },
+      '/admin/free-all-tools': {
+        target: 'http://localhost:5756',
+        changeOrigin: true,
+        secure: false
+      },
       // Note: Do not proxy '/admin' because frontend client-side routes like
       // '/admin/report-manager' must be served by Vite (SPA). If you add specific
       // admin API endpoints later, proxy those exact paths instead (e.g. '/admin/reminders').
+
     }
   }
 })

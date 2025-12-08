@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Table, Button, Space, Tag, message, Popover, Select, DatePicker, Pagination, Input, Modal, Radio } from 'antd'
 import { FilterOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import Analytics from './Analytics'
 
 const { TextArea } = Input
 

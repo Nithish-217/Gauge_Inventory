@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Table, Button, Space, message, Tag, Popover, Select, DatePicker, Pagination, Input, AutoComplete } from 'antd'
+import { Table, Button, Space, message, Tag, Popover, Select, DatePicker, Pagination, Input, Tabs, AutoComplete } from 'antd'
 import { loadJsPDF, makeHeaderFooter, formatNow } from '../../utils/pdfExport.js'
 
 import { FilterOutlined, ReloadOutlined, CheckOutlined, CloseOutlined, UndoOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import Analytics from './Analytics'
 
 export default function GaugeTracker() {
   const [rows, setRows] = useState([])
@@ -353,149 +354,164 @@ export default function GaugeTracker() {
       setExporting(false)
     }
   }
+  const logsTab = (
+    <div className="table-wrapper">
+      <div className="table-controls">
+        <div className="search-section">
+          <Popover
+            title={null}
+            trigger="click"
+            open={filterOpen}
+            onOpenChange={setFilterOpen}
+            content={(
+              <div style={{display:'grid', gap:8, minWidth:260}}>
+                <div>
+                  <div style={{fontSize:12, color:'#666'}}>Equipment name</div>
+                  <AutoComplete
+                    value={nameFilter}
+                    options={nameOptions}
+                    onSearch={(text)=>{ setNameFilter(text); fetchNameSuggest(text) }}
+                    onSelect={(v)=>{ setNameFilter(v) }}
+                    allowClear
+                    style={{ width: '100%' }}
+                    placeholder="Type to search equipment names"
+                    filterOption={false}
+                  />
+                </div>
+                <div>
+                  <div style={{fontSize:12, color:'#666'}}>Status</div>
+                  <Select
+                    allowClear
+                    placeholder="Select status"
+                    value={statusFilter}
+                    onChange={(v)=>setStatusFilter(v)}
+                    style={{ width: '100%' }}
+                    options={[
+                      { label: 'Requested', value: 'requested' },
+                      { label: 'Accepted', value: 'accepted' },
+                      { label: 'Rejected', value: 'rejected' },
+                      { label: 'Returned', value: 'returned' },
+                    ]}
+                  />
+                </div>
+                <div>
+                  <div style={{fontSize:12, color:'#666'}}>Requested date range</div>
+                  <Space.Compact style={{ width: '100%' }}>
+                    <DatePicker
+                      style={{ width: '50%' }}
+                      placeholder="From date"
+                      value={Array.isArray(dateFilter) ? dateFilter[0] : null}
+                      onChange={(d)=> setDateFilter(d ? [d, Array.isArray(dateFilter)? dateFilter[1] : null] : (Array.isArray(dateFilter)? [null, dateFilter[1]] : null))}
+                      allowClear
+                    />
+                    <DatePicker
+                      style={{ width: '50%' }}
+                      placeholder="To date"
+                      value={Array.isArray(dateFilter) ? dateFilter[1] : null}
+                      onChange={(d)=> setDateFilter(d ? [Array.isArray(dateFilter)? dateFilter[0] : null, d] : (Array.isArray(dateFilter)? [dateFilter[0], null] : null))}
+                      allowClear
+                    />
+                  </Space.Compact>
+                </div>
+                <Space>
+                  <Button size="small" onClick={()=>{ setStatusFilter(undefined); setDateFilter(null); setNameFilter('') }}>Reset</Button>
+                  <Button size="small" type="primary" onClick={()=>{ setCurrentPage(1); fetchRows({ page: 0 }) }}>Apply</Button>
+                </Space>
+              </div>
+            )}
+          >
+            <Button icon={<FilterOutlined />}>
+              Filters
+            </Button>
+          </Popover>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={() => { setCurrentPage(1); fetchRows({ page:0, reset:true }) }}
+            >
+              Refresh
+            </Button>
+            <Button
+              danger
+              onClick={async ()=>{
+              try {
+                const res = await fetch('/admin/free-all-tools', { method: 'POST' })
+                if (!res.ok) throw new Error(await res.text() || 'Failed to reset')
+                const data = await res.json().catch(()=>({}))
+                message.success(`All tools freed${data?.gauge_requests_updated!=null?` (${data.gauge_requests_updated})`:''}`)
+                fetchRows()
+              } catch (e) {
+                message.error(typeof e?.message === 'string' ? e.message : 'Failed to reset')
+              }
+              }}
+            >
+              Reset: Free All Tools
+            </Button>
+            <Button size="small" type="primary" onClick={exportTrackerPDF} loading={exporting} disabled={exporting} style={{ padding: '0 8px', width: 'auto', flex: '0 0 auto', whiteSpace: 'nowrap' }}>
+              {exporting ? 'Generating...' : 'Download PDF'}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="table-container">
+        <Table
+          columns={columns}
+          dataSource={filteredRows}
+          loading={loading}
+          pagination={false}
+          bordered
+          size="middle"
+          className="ant-table-striped professional-table"
+          rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
+          scroll={{ x: 1000 }}
+          onChange={(_, __, sorter) => {
+            const s = Array.isArray(sorter) ? sorter[0] : sorter
+            const field = s && s.field ? s.field : null
+            const order = s && s.order ? (s.order === 'descend' ? 'desc' : 'asc') : null
+            setSortBy(field)
+            setSortDir(order)
+            setCurrentPage(1)
+            fetchRows({ page: 0 })
+          }}
+        />
+      </div>
+
+      <div className="pagination-container">
+        <Pagination
+          current={currentPage}
+          total={totalItems}
+          pageSize={pageSize}
+          showSizeChanger
+          showQuickJumper
+          showTotal={(total, range) => `${range[0]}-${range[1]} of ${total} items`}
+          onChange={handlePageChange}
+          onShowSizeChange={handlePageChange}
+          pageSizeOptions={['10', '20', '50', '100']}
+        />
+      </div>
+    </div>
+  )
 
   return (
     <div className="equipment-table-container">
       <div className="table-header">
         <h2>Gauge Tracker</h2>
       </div>
-
-      <div className="table-wrapper">
-        <div className="table-controls">
-          <div className="search-section">
-            <Popover
-              title={null}
-              trigger="click"
-              open={filterOpen}
-              onOpenChange={setFilterOpen}
-              content={(
-                <div style={{display:'grid', gap:8, minWidth:260}}>
-                  <div>
-                    <div style={{fontSize:12, color:'#666'}}>Equipment name</div>
-                    <AutoComplete
-                      value={nameFilter}
-                      options={nameOptions}
-                      onSearch={(text)=>{ setNameFilter(text); fetchNameSuggest(text) }}
-                      onSelect={(v)=>{ setNameFilter(v) }}
-                      allowClear
-                      style={{ width: '100%' }}
-                      placeholder="Type to search equipment names"
-                      filterOption={false}
-                    />
-                  </div>
-                  <div>
-                    <div style={{fontSize:12, color:'#666'}}>Status</div>
-                    <Select
-                      allowClear
-                      placeholder="Select status"
-                      value={statusFilter}
-                      onChange={(v)=>setStatusFilter(v)}
-                      style={{ width: '100%' }}
-                      options={[
-                        { label: 'Requested', value: 'requested' },
-                        { label: 'Accepted', value: 'accepted' },
-                        { label: 'Rejected', value: 'rejected' },
-                        { label: 'Returned', value: 'returned' },
-                      ]}
-                    />
-                  </div>
-                  <div>
-                    <div style={{fontSize:12, color:'#666'}}>Requested date range</div>
-                    <Space.Compact style={{ width: '100%' }}>
-                      <DatePicker
-                        style={{ width: '50%' }}
-                        placeholder="From date"
-                        value={Array.isArray(dateFilter) ? dateFilter[0] : null}
-                        onChange={(d)=> setDateFilter(d ? [d, Array.isArray(dateFilter)? dateFilter[1] : null] : (Array.isArray(dateFilter)? [null, dateFilter[1]] : null))}
-                        allowClear
-                      />
-                      <DatePicker
-                        style={{ width: '50%' }}
-                        placeholder="To date"
-                        value={Array.isArray(dateFilter) ? dateFilter[1] : null}
-                        onChange={(d)=> setDateFilter(d ? [Array.isArray(dateFilter)? dateFilter[0] : null, d] : (Array.isArray(dateFilter)? [dateFilter[0], null] : null))}
-                        allowClear
-                      />
-                    </Space.Compact>
-                  </div>
-                  <Space>
-                    <Button size="small" onClick={()=>{ setStatusFilter(undefined); setDateFilter(null); setNameFilter('') }}>Reset</Button>
-                    <Button size="small" type="primary" onClick={()=>{ setCurrentPage(1); fetchRows({ page: 0 }) }}>Apply</Button>
-                  </Space>
-                </div>
-              )}
-            >
-              <Button icon={<FilterOutlined />}>
-                Filters
-              </Button>
-            </Popover>
-            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
-              <Button
-                icon={<ReloadOutlined />}
-                onClick={() => { setCurrentPage(1); fetchRows({ page:0, reset:true }) }}
-              >
-                Refresh
-              </Button>
-              <Button
-                danger
-                onClick={async ()=>{
-                try {
-                  const res = await fetch('/admin/free-all-tools', { method: 'POST' })
-                  if (!res.ok) throw new Error(await res.text() || 'Failed to reset')
-                  const data = await res.json().catch(()=>({}))
-                  message.success(`All tools freed${data?.gauge_requests_updated!=null?` (${data.gauge_requests_updated})`:''}`)
-                  fetchRows()
-                } catch (e) {
-                  message.error(typeof e?.message === 'string' ? e.message : 'Failed to reset')
-                }
-                }}
-              >
-                Reset: Free All Tools
-              </Button>
-              <Button size="small" type="primary" onClick={exportTrackerPDF} loading={exporting} disabled={exporting} style={{ padding: '0 8px', width: 'auto', flex: '0 0 auto', whiteSpace: 'nowrap' }}>
-                {exporting ? 'Generating...' : 'Download PDF'}
-              </Button>
-            </div>
-          </div>
-        </div>
-
-        <div className="table-container">
-          <Table
-            columns={columns}
-            dataSource={filteredRows}
-            loading={loading}
-            pagination={false}
-            bordered
-            size="middle"
-            className="ant-table-striped professional-table"
-            rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
-            scroll={{ x: 1000 }}
-            onChange={(_, __, sorter) => {
-              const s = Array.isArray(sorter) ? sorter[0] : sorter
-              const field = s && s.field ? s.field : null
-              const order = s && s.order ? (s.order === 'descend' ? 'desc' : 'asc') : null
-              setSortBy(field)
-              setSortDir(order)
-              setCurrentPage(1)
-              fetchRows({ page: 0 })
-            }}
-          />
-        </div>
-
-        <div className="pagination-container">
-          <Pagination
-            current={currentPage}
-            total={totalItems}
-            pageSize={pageSize}
-            showSizeChanger
-            showQuickJumper
-            showTotal={(total, range) => `${range[0]}-${range[1]} of ${total} items`}
-            onChange={handlePageChange}
-            onShowSizeChange={handlePageChange}
-            pageSizeOptions={['10', '20', '50', '100']}
-          />
-        </div>
-      </div>
+      <Tabs
+        items={[
+          {
+            key: 'logs',
+            label: <span style={{ padding: '0 24px', fontSize: '15px', fontWeight: 500 }}>Logs</span>,
+            children: logsTab,
+          },
+          {
+            key: 'analytics',
+            label: <span style={{ padding: '0 24px', fontSize: '15px', fontWeight: 500 }}>Analytics</span>,
+            children: <div style={{ marginTop: '8px' }}><Analytics /></div>,
+          },
+        ]}
+      />
     </div>
   )
 }

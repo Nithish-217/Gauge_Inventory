@@ -795,6 +795,154 @@ def send_gauge_reminder(payload: schemas.ReminderRequest, db: Session = Depends(
         raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
 
 
+# =========================
+# Analytics Endpoints
+# =========================
+
+@app.get("/analytics/returns-rejects")
+def analytics_returns_rejects(db: Session = Depends(get_db)):
+    """Return summary totals and monthly trends for returns and rejects."""
+    # Ensure required columns exist
+    try:
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
+    except Exception:
+        pass
+
+    # Totals summary
+    summary = {
+        "total_requested": 0,
+        "total_accepted": 0,
+        "total_returns": 0,
+        "total_rejects": 0,
+        # Optional breakdown placeholders if available elsewhere
+        "returns_good": 0,
+        "returns_bad": 0,
+        "returns_needs_repair": 0,
+        "returns_custom": 0,
+    }
+    try:
+        rows = db.execute(text(
+            """
+            SELECT status, COUNT(*) AS c
+            FROM public.gauge_requests
+            GROUP BY status
+            """
+        )).mappings().all()
+        for r in rows:
+            s = (r.get("status") or "").lower()
+            c = int(r.get("c") or 0)
+            if s == "requested":
+                summary["total_requested"] += c
+            elif s == "accepted":
+                summary["total_accepted"] += c
+            elif s == "returned":
+                summary["total_returns"] += c
+            elif s == "rejected":
+                summary["total_rejects"] += c
+    except Exception:
+        pass
+
+    # Monthly trends for last 12 months
+    monthly_trends: list[dict] = []
+    try:
+        trend_rows = db.execute(text(
+            """
+            WITH months AS (
+              SELECT date_trunc('month', (NOW() - (interval '1 month' * g.i))) AS m
+              FROM generate_series(0, 11) AS g(i)
+            )
+            SELECT to_char(m.m, 'YYYY-MM-01') AS month,
+                   COALESCE(rtn.c, 0) AS returns,
+                   COALESCE(rj.c, 0) AS rejects
+            FROM months m
+            LEFT JOIN (
+              SELECT date_trunc('month', returned_at) AS mm, COUNT(*) AS c
+              FROM public.gauge_requests
+              WHERE status = 'returned' AND returned_at IS NOT NULL
+              GROUP BY mm
+            ) rtn ON rtn.mm = m.m
+            LEFT JOIN (
+              -- We don't have rejected_at; approximate by requested_at month
+              SELECT date_trunc('month', requested_at) AS mm, COUNT(*) AS c
+              FROM public.gauge_requests
+              WHERE status = 'rejected'
+              GROUP BY mm
+            ) rj ON rj.mm = m.m
+            ORDER BY m.m
+            """
+        )).mappings().all()
+        for t in trend_rows:
+            monthly_trends.append({
+                "month": t.get("month"),
+                "returns": int(t.get("returns") or 0),
+                "rejects": int(t.get("rejects") or 0),
+            })
+    except Exception:
+        pass
+
+    return {"summary": summary, "monthly_trends": monthly_trends}
+
+
+@app.get("/analytics/most-used-tools")
+def analytics_most_used_tools(limit: int = 10, db: Session = Depends(get_db)):
+    """Return top tools by request volume with accepted/returned counts."""
+    limit = max(1, min(int(limit or 10), 50))
+    try:
+        rows = db.execute(text(
+            """
+            SELECT e.name_of_the_equipment,
+                   COUNT(gr.id) AS request_count,
+                   SUM(CASE WHEN gr.status = 'accepted' THEN 1 ELSE 0 END) AS accepted_count,
+                   SUM(CASE WHEN gr.status = 'returned' THEN 1 ELSE 0 END) AS returned_count
+            FROM public.gauge_requests gr
+            LEFT JOIN public.equipment_used_for_calibration e ON e.gauge_id = gr.gauge_id
+            GROUP BY e.name_of_the_equipment
+            ORDER BY request_count DESC NULLS LAST
+            LIMIT :lim
+            """
+        ), {"lim": limit}).mappings().all()
+        data = []
+        for r in rows:
+            data.append({
+                "name_of_the_equipment": r.get("name_of_the_equipment") or "Unknown",
+                "request_count": int(r.get("request_count") or 0),
+                "accepted_count": int(r.get("accepted_count") or 0),
+                "returned_count": int(r.get("returned_count") or 0),
+            })
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute most used tools: {str(e)}")
+
+
+@app.get("/analytics/operator-analytics")
+def analytics_operator(db: Session = Depends(get_db)):
+    """Return simple per-operator request/accept/reject counts."""
+    try:
+        rows = db.execute(text(
+            """
+            SELECT COALESCE(NULLIF(TRIM(requested_by), ''), 'Unknown') AS operator,
+                   COUNT(*) AS total_requests,
+                   SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) AS accepted_requests,
+                   SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected_requests
+            FROM public.gauge_requests
+            GROUP BY operator
+            ORDER BY total_requests DESC
+            LIMIT 50
+            """
+        )).mappings().all()
+        return {"operator_stats": [
+            {
+                "operator": r.get("operator") or "Unknown",
+                "total_requests": int(r.get("total_requests") or 0),
+                "accepted_requests": int(r.get("accepted_requests") or 0),
+                "rejected_requests": int(r.get("rejected_requests") or 0),
+            }
+            for r in rows
+        ]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute operator analytics: {str(e)}")
+
+
 @app.get("/equipment")
 def list_equipment(
     limit: int = 50,
@@ -3419,3 +3567,243 @@ def return_gauge_track(track_id: int, payload: schemas.GaugeTrackAction, db: Ses
     ), {"id": track_id, "returned_by": returned_by, "return_status": rs, "return_remarks": rr if rr else None})
     db.commit()
     return list_gauge_tracks(limit=1, offset=0, db=db)[0]
+
+    
+
+# Analytics Routes
+
+@app.get("/analytics/returns-rejects")
+
+def get_returns_rejects_analytics(db: Session = Depends(get_db)):
+
+    """Get analytics for returns and rejects"""
+
+    try:
+
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ"))
+
+        db.execute(text("ALTER TABLE public.gauge_requests ADD COLUMN IF NOT EXISTS return_status VARCHAR(50)"))
+
+    except Exception:
+
+        pass
+
+    
+
+    # Get returns and rejects counts
+
+    result = db.execute(text("""
+
+        SELECT 
+
+            COUNT(*) FILTER (WHERE status = 'returned') as total_returns,
+
+            COUNT(*) FILTER (WHERE status = 'rejected') as total_rejects,
+
+            COUNT(*) FILTER (WHERE status = 'returned' AND return_status = 'Good') as returns_good,
+
+            COUNT(*) FILTER (WHERE status = 'returned' AND return_status = 'Bad') as returns_bad,
+
+            COUNT(*) FILTER (WHERE status = 'returned' AND return_status = 'Needs Repair') as returns_needs_repair,
+
+            COUNT(*) FILTER (WHERE status = 'returned' AND return_status = 'Custom') as returns_custom,
+
+            COUNT(*) FILTER (WHERE status = 'accepted') as total_accepted,
+
+            COUNT(*) FILTER (WHERE status = 'requested') as total_requested
+
+        FROM public.gauge_requests
+
+    """)).mappings().first()
+
+    
+
+    # Get returns and rejects by month
+
+    monthly_data = db.execute(text("""
+
+        SELECT 
+
+            DATE_TRUNC('month', requested_at) as month,
+
+            COUNT(*) FILTER (WHERE status = 'returned') as returns,
+
+            COUNT(*) FILTER (WHERE status = 'rejected') as rejects
+
+        FROM public.gauge_requests
+
+        WHERE status IN ('returned', 'rejected')
+
+        GROUP BY DATE_TRUNC('month', requested_at)
+
+        ORDER BY month DESC
+
+        LIMIT 12
+
+    """)).mappings().all()
+
+    
+
+    return {
+
+        "summary": dict(result) if result else {},
+
+        "monthly_trends": [dict(row) for row in monthly_data]
+
+    }
+
+
+
+
+
+@app.get("/analytics/most-used-tools")
+
+def get_most_used_tools_analytics(limit: int = 10, db: Session = Depends(get_db)):
+
+    """Get analytics for most used tools"""
+
+    limit = max(1, min(limit, 100))
+
+    
+
+    result = db.execute(text("""
+
+        SELECT 
+
+            e.gauge_id,
+
+            e.name_of_the_equipment,
+
+            e.idfn_no,
+
+            e.location,
+
+            e.make_model,
+
+            COUNT(gr.id) as request_count,
+
+            COUNT(*) FILTER (WHERE gr.status = 'accepted') as accepted_count,
+
+            COUNT(*) FILTER (WHERE gr.status = 'returned') as returned_count,
+
+            COUNT(*) FILTER (WHERE gr.status = 'rejected') as rejected_count
+
+        FROM public.gauge_requests gr
+
+        JOIN public.equipment_used_for_calibration e ON e.gauge_id = gr.gauge_id
+
+        GROUP BY e.gauge_id, e.name_of_the_equipment, e.idfn_no, e.location, e.make_model
+
+        ORDER BY request_count DESC
+
+        LIMIT :limit
+
+    """), {"limit": limit}).mappings().all()
+
+    
+
+    return [dict(row) for row in result]
+
+
+
+
+
+@app.get("/analytics/operator-analytics")
+
+def get_operator_analytics(db: Session = Depends(get_db)):
+
+    """Get analytics for operators"""
+
+    # Get operator request statistics
+
+    operator_stats = db.execute(text("""
+
+        SELECT 
+
+            requested_by as operator,
+
+            COUNT(*) as total_requests,
+
+            COUNT(*) FILTER (WHERE status = 'accepted') as accepted_requests,
+
+            COUNT(*) FILTER (WHERE status = 'rejected') as rejected_requests,
+
+            COUNT(*) FILTER (WHERE status = 'returned') as returned_requests,
+
+            COUNT(*) FILTER (WHERE status = 'requested') as pending_requests
+
+        FROM public.gauge_requests
+
+        WHERE requested_by IS NOT NULL
+
+        GROUP BY requested_by
+
+        ORDER BY total_requests DESC
+
+    """)).mappings().all()
+
+    
+
+    # Get operator acceptance/rejection rates
+
+    operator_rates = db.execute(text("""
+
+        SELECT 
+
+            requested_by as operator,
+
+            COUNT(*) as total,
+
+            ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'accepted') / NULLIF(COUNT(*), 0), 2) as acceptance_rate,
+
+            ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'rejected') / NULLIF(COUNT(*), 0), 2) as rejection_rate
+
+        FROM public.gauge_requests
+
+        WHERE requested_by IS NOT NULL AND status IN ('accepted', 'rejected')
+
+        GROUP BY requested_by
+
+        HAVING COUNT(*) > 0
+
+        ORDER BY total DESC
+
+    """)).mappings().all()
+
+    
+
+    # Get most active operators (by month)
+
+    monthly_operators = db.execute(text("""
+
+        SELECT 
+
+            requested_by as operator,
+
+            DATE_TRUNC('month', requested_at) as month,
+
+            COUNT(*) as request_count
+
+        FROM public.gauge_requests
+
+        WHERE requested_by IS NOT NULL
+
+        GROUP BY requested_by, DATE_TRUNC('month', requested_at)
+
+        ORDER BY month DESC, request_count DESC
+
+        LIMIT 20
+
+    """)).mappings().all()
+
+    
+
+    return {
+
+        "operator_stats": [dict(row) for row in operator_stats],
+
+        "operator_rates": [dict(row) for row in operator_rates],
+
+        "monthly_operators": [dict(row) for row in monthly_operators]
+
+    }
