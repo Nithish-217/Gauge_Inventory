@@ -30,6 +30,7 @@ from email.message import EmailMessage
 from dotenv import load_dotenv
 from fastapi.responses import StreamingResponse, RedirectResponse
 from .storage import MinioStorage
+from .report_ext import router as report_ext_router
 from scripts import due_reminder as due_reminder_script
 import json
 import urllib.request
@@ -56,6 +57,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount additional report extensions (streaming and delete-report)
+app.include_router(report_ext_router)
+
 
 
 def ensure_employee_id_column(db: Session):
@@ -1273,6 +1278,10 @@ def _start_scheduler():
 
 _due_reminder_time_str = os.getenv("DUE_REMINDER_TIME", "09:11")
 _due_reminder_event = threading.Event()
+try:
+    _due_reminder_offset_days = int(os.getenv("DAYS_BEFORE_DUE", "0"))
+except Exception:
+    _due_reminder_offset_days = 0
 
 
 def _parse_hhmm(s: str) -> tuple[int, int]:
@@ -1310,6 +1319,8 @@ def _trigger_due_reminder():
             print(f"[due-reminder] HTTP trigger failed: {e}")
     else:
         # Direct in-process run
+        # ensure the script sees the current offset
+        os.environ["DAYS_BEFORE_DUE"] = str(_due_reminder_offset_days)
         due_reminder_script.main()
 
 
@@ -1374,6 +1385,11 @@ def get_due_reminder_time():
     return {"time": _due_reminder_time_str, "timezone": "Asia/Kolkata"}
 
 
+@app.get("/admin/due-reminder/offset")
+def get_due_reminder_offset():
+    return {"days": _due_reminder_offset_days}
+
+
 @app.get("/admin/email-logs")
 def list_email_logs(
     limit: int = 50,
@@ -1427,6 +1443,12 @@ def list_email_logs(
     ), params).mappings().all()
     # Serialize JSONB context if needed
     out = []
+    # derive from_email from env
+    try:
+        load_dotenv(override=False)
+    except Exception:
+        pass
+    from_email = os.getenv("EMAIL_FROM", os.getenv("EMAIL_USER", ""))
     for r in rows:
         d = dict(r)
         try:
@@ -1436,6 +1458,16 @@ def list_email_logs(
                 d["context"] = json.loads(d["context"])  # type: ignore
         except Exception:
             pass
+        # add convenience fields
+        try:
+            sent = d.get("sent_at")
+            if sent is not None:
+                # Format date/time strings (local naive ISO)
+                d["date_str"] = sent.strftime("%Y-%m-%d")
+                d["time_str"] = sent.strftime("%H:%M:%S")
+        except Exception:
+            pass
+        d["from_email"] = from_email
         out.append(d)
     return out
 
@@ -1481,10 +1513,46 @@ async def set_due_reminder_time(request: Request, time: str | None = None):
 @app.post("/admin/due-reminder/run")
 def run_due_reminder_now():
     try:
+        os.environ["DAYS_BEFORE_DUE"] = str(_due_reminder_offset_days)
         due_reminder_script.main()
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"due_reminder failed: {e}")
+
+
+@app.put("/admin/due-reminder/offset")
+async def set_due_reminder_offset(request: Request, days: int | None = None):
+    global _due_reminder_offset_days
+    dval = None
+    # JSON
+    try:
+        data = await request.json()
+        if isinstance(data, dict) and "days" in data:
+            dval = data.get("days")
+    except Exception:
+        pass
+    # Form
+    if dval is None:
+        try:
+            form = await request.form()
+            if "days" in form:
+                dval = form.get("days")
+        except Exception:
+            pass
+    # Query
+    if dval is None and days is not None:
+        dval = days
+
+    try:
+        new_days = int(dval)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid days; must be integer >= 0")
+    if new_days < 0:
+        raise HTTPException(status_code=400, detail="Invalid days; must be >= 0")
+
+    _due_reminder_offset_days = new_days
+    os.environ["DAYS_BEFORE_DUE"] = str(_due_reminder_offset_days)
+    return {"days": _due_reminder_offset_days}
 
 
 @app.post("/equipment", response_model=schemas.EquipmentPublic, status_code=status.HTTP_201_CREATED)
@@ -3804,3 +3872,215 @@ def get_operator_analytics(db: Session = Depends(get_db)):
         "monthly_operators": [dict(row) for row in monthly_operators]
 
     }
+
+# =========================
+# Reports: Multi-file per report (MinIO/local)
+# =========================
+
+def ensure_reports_new_tables(db: Session):
+    try:
+        db.execute(text("""
+            CREATE TABLE IF NOT EXISTS public.reports (
+              id SERIAL PRIMARY KEY,
+              gauge_id INTEGER NOT NULL,
+              title TEXT NOT NULL,
+              notes TEXT,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        db.execute(text("""
+            CREATE TABLE IF NOT EXISTS public.report_files (
+              id SERIAL PRIMARY KEY,
+              report_id INTEGER NOT NULL REFERENCES public.reports(id) ON DELETE CASCADE,
+              bucket TEXT,
+              object_key TEXT NOT NULL,
+              etag TEXT,
+              size_bytes BIGINT,
+              content_type TEXT,
+              original_name TEXT,
+              uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        db.commit()
+    except Exception:
+        try: db.rollback()
+        except Exception: pass
+
+def _minio_client_from_env() -> Minio:
+    try:
+        load_dotenv(override=False)
+    except Exception:
+        pass
+    endpoint = os.getenv("MINIO_ENDPOINT", "127.0.0.1:9000")
+    access_key = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+    secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+    secure = str(os.getenv("MINIO_SECURE", "false")).lower() == "true"
+    return Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
+
+def _presign_get(bucket: str, object_key: str, expires_seconds: int = 900) -> str:
+    try:
+        client = _minio_client_from_env()
+        from datetime import timedelta
+        return client.presigned_get_object(bucket, object_key, expires=timedelta(seconds=expires_seconds))
+    except Exception:
+        try:
+            return _build_minio_url(object_key)
+        except Exception:
+            return object_key
+
+ALLOWED_REPORT_MIME = {
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/csv",
+    "text/plain",
+}
+MAX_FILE_BYTES = 20 * 1024 * 1024
+
+@app.post("/gauges/{gauge_id}/reports", status_code=201)
+async def create_report_with_files(
+    gauge_id: int,
+    title: str = Form(...),
+    notes: str = Form(""),
+    files: list[UploadFile] = File([]),
+    last_calibration_date: str | None = Form(None),
+    calibration_freq_months: int | None = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Create a report row and attach multiple files. Optionally update equipment dates."""
+    ensure_reports_new_tables(db)
+    # Create parent report
+    res = db.execute(text("""
+        INSERT INTO public.reports (gauge_id, title, notes)
+        VALUES (:gid, :title, :notes)
+        RETURNING id
+    """), {"gid": gauge_id, "title": title.strip(), "notes": (notes or "").strip()})
+    report_id = int(res.fetchone()[0])
+
+    # Optional equipment update (keeps legacy behavior)
+    try:
+        if last_calibration_date and calibration_freq_months is not None:
+            d = dt.strptime(last_calibration_date, "%Y-%m-%d").date()
+            months = int(calibration_freq_months)
+            y = d.year + (d.month - 1 + months) // 12
+            m = (d.month - 1 + months) % 12 + 1
+            last_day = calendar.monthrange(y, m)[1]
+            day = min(d.day, last_day)
+            due = dt(year=y, month=m, day=day).date().isoformat()
+            db.execute(text("""
+                UPDATE public.equipment_used_for_calibration
+                SET date_of_last_calibration = CAST(:last AS DATE),
+                    calibration_freq_months = CAST(:freq AS INTEGER),
+                    calibration_due = CAST(:due AS DATE)
+                WHERE gauge_id = :gid
+            """), {"last": last_calibration_date, "freq": calibration_freq_months, "due": due, "gid": gauge_id})
+            db.commit()
+    except Exception:
+        try: db.rollback()
+        except Exception: pass
+
+    storage_mode = get_report_storage_mode()
+    saved: list[dict] = []
+    try:
+        for up in files or []:
+            if not up or not (up.filename or "").strip():
+                continue
+            ctype = (up.content_type or "").lower()
+            if ctype not in ALLOWED_REPORT_MIME:
+                raise HTTPException(status_code=415, detail=f"Unsupported type: {ctype}")
+            data = await up.read()
+            if data is None:
+                data = b""
+            if len(data) > MAX_FILE_BYTES:
+                raise HTTPException(status_code=413, detail=f"File {up.filename} exceeds 20MB limit")
+
+            # extension
+            fname = (up.filename or "").lower()
+            ext = ""
+            for e in (".pdf", ".png", ".jpg", ".jpeg", ".docx", ".csv", ".txt"):
+                if fname.endswith(e):
+                    ext = ".jpg" if e == ".jpeg" else e
+                    break
+            object_key = f"gauges/{gauge_id}/reports/{report_id}/{uuid.uuid4().hex}{ext}"
+
+            if storage_mode == "local":
+                base_dir = get_report_storage_dir()
+                out_dir = os.path.join(base_dir, "reports", f"gauges/{gauge_id}/reports/{report_id}")
+                try: os.makedirs(out_dir, exist_ok=True)
+                except Exception: pass
+                fpath = os.path.join(out_dir, os.path.basename(object_key))
+                with open(fpath, "wb") as f:
+                    f.write(data)
+                stored_key = f"local/reports/gauges/{gauge_id}/reports/{report_id}/{os.path.basename(object_key)}"
+            else:
+                storage = MinioStorage()
+                storage.put_report(object_key, data, ctype or "application/octet-stream")
+                stored_key = object_key
+
+            db.execute(text("""
+                INSERT INTO public.report_files (report_id, bucket, object_key, etag, size_bytes, content_type, original_name)
+                VALUES (:rid, :bucket, :okey, :etag, :size, :ctype, :orig)
+            """), {
+                "rid": report_id,
+                "bucket": os.getenv("MINIO_BUCKET", "reports"),
+                "okey": stored_key if storage_mode == "local" else object_key,
+                "etag": None,
+                "size": len(data),
+                "ctype": ctype,
+                "orig": up.filename or "",
+            })
+            saved.append({
+                "original_name": up.filename or "",
+                "content_type": ctype,
+                "size_bytes": len(data),
+                "object_key": object_key,
+            })
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to upload files: {str(e)}")
+
+    # presign
+    out = []
+    bucket = os.getenv("MINIO_BUCKET", "reports")
+    for s in saved:
+        url = _presign_get(bucket, s["object_key"], 900)
+        out.append({**s, "url": url})
+    return {"report_id": report_id, "title": title, "notes": notes, "files": out}
+
+@app.get("/gauges/{gauge_id}/reports/{report_id}/files")
+def list_report_files(gauge_id: int, report_id: int, db: Session = Depends(get_db)):
+    ensure_reports_new_tables(db)
+    rpt = db.execute(text("SELECT id FROM public.reports WHERE id = :rid AND gauge_id = :gid"), {"rid": report_id, "gid": gauge_id}).mappings().first()
+    if not rpt:
+        raise HTTPException(status_code=404, detail="Report not found")
+    rows = db.execute(text("SELECT id, object_key, content_type, size_bytes, original_name, uploaded_at FROM public.report_files WHERE report_id = :rid ORDER BY id"), {"rid": report_id}).mappings().all()
+    bucket = os.getenv("MINIO_BUCKET", "reports")
+    return [{
+        "id": r["id"],
+        "original_name": r.get("original_name"),
+        "content_type": r.get("content_type"),
+        "size_bytes": r.get("size_bytes"),
+        "uploaded_at": str(r.get("uploaded_at") or ""),
+        "url": _presign_get(bucket, r.get("object_key"), 900),
+    } for r in rows]
+
+@app.delete("/gauges/{gauge_id}/reports/{report_id}/files/{file_id}", status_code=204)
+def delete_report_file(gauge_id: int, report_id: int, file_id: int, db: Session = Depends(get_db)):
+    ensure_reports_new_tables(db)
+    rpt = db.execute(text("SELECT id FROM public.reports WHERE id = :rid AND gauge_id = :gid"), {"rid": report_id, "gid": gauge_id}).mappings().first()
+    if not rpt:
+        raise HTTPException(status_code=404, detail="Report not found")
+    row = db.execute(text("SELECT id, object_key FROM public.report_files WHERE id = :fid AND report_id = :rid"), {"fid": file_id, "rid": report_id}).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        client = _minio_client_from_env()
+        bucket = os.getenv("MINIO_BUCKET", "reports")
+        client.remove_object(bucket, row.get("object_key"))
+    except Exception:
+        pass
+    db.execute(text("DELETE FROM public.report_files WHERE id = :fid"), {"fid": file_id})
+    db.commit()
+    return None

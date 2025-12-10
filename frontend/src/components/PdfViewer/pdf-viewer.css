@@ -1,0 +1,7 @@
+.pdfv-root{display:flex;flex-direction:column;min-height:0;border:1px solid #eee;background:#f6f7f9}
+.pdfv-toolbar{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;background:#fff;border-bottom:1px solid #eee}
+.pdfv-page{display:flex;align-items:center;gap:6px}
+.pdfv-scroll{flex:1;min-height:0;overflow:auto;padding:12px;background:linear-gradient(#eaedf1,#f6f7f9)}
+.pdfv-pages{max-width:1200px;margin:0 auto}
+.pdfv-loading{padding:24px;text-align:center;color:#666}
+.pdfv-error{padding:24px;color:#a61d24}

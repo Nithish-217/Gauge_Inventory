@@ -12,6 +12,8 @@
   "dependencies": {
     "@ant-design/icons": "^6.1.0",
     "antd": "^5.27.4",
+    "baseline-browser-mapping": "^2.9.5",
+    "pdfjs-dist": "^5.4.449",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.26.2",

@@ -109,7 +109,14 @@ def _log_email(db, to_email: str, subject: str, body: str, status: str, error: s
 
 
 def main():
-    target_due = date.today() #+ timedelta(days=3)
+    # Days before due: if 0 -> today; if N -> notify N days before due date
+    try:
+        offset_days = int(os.getenv("DAYS_BEFORE_DUE", "0"))
+        if offset_days < 0:
+            offset_days = 0
+    except Exception:
+        offset_days = 0
+    target_due = date.today() + timedelta(days=offset_days)
     smtp_host, smtp_port, smtp_user, smtp_pass, email_from = get_env()
 
     db = SessionLocal()

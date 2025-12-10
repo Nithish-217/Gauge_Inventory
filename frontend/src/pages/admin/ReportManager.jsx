@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Table, Button, Space, Input, DatePicker, InputNumber, Upload, message, Typography, Tag, Modal, Form, Pagination, AutoComplete } from 'antd'
+import PdfJsViewer from '../../components/PdfViewer/PdfJsViewer'
+import '../../components/PdfViewer/pdf-viewer.css'
+import { Table, Button, Space, Input, DatePicker, InputNumber, Upload, message, Typography, Tag, Modal, Form, Pagination, AutoComplete, List, Divider, Popconfirm, Tabs, Spin } from 'antd'
 import { ReloadOutlined, UploadOutlined, DownloadOutlined, EyeOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 
@@ -10,7 +12,9 @@ export default function ReportManager() {
   const [modalOpen, setModalOpen] = useState(false)
   const [activeRow, setActiveRow] = useState(null)
   const [form] = Form.useForm()
-  const [selectedFile, setSelectedFile] = useState(null)
+  const [selectedFiles, setSelectedFiles] = useState([])
+  const [reportTitle, setReportTitle] = useState('')
+  const [reportNotes, setReportNotes] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
   const [totalItems, setTotalItems] = useState(0)
   const [pageSize, setPageSize] = useState(10)
@@ -19,8 +23,94 @@ export default function ReportManager() {
   const [pdfViewerOpen, setPdfViewerOpen] = useState(false)
   const [pdfViewerUrl, setPdfViewerUrl] = useState(null)
   const [pdfViewerTitle, setPdfViewerTitle] = useState('')
+  const [filesModalOpen, setFilesModalOpen] = useState(false)
+  const [filesModalGauge, setFilesModalGauge] = useState(null)
+  const [filesModalData, setFilesModalData] = useState([])
+  const [filesLoading, setFilesLoading] = useState(false)
+  const [viewerOpen, setViewerOpen] = useState(false)
+  const [viewerGauge, setViewerGauge] = useState(null)
+  const [viewerData, setViewerData] = useState({ reports: [] })
+  const [viewerLoading, setViewerLoading] = useState(false)
   const scrollRef = useRef(null)
   const bcRef = useRef(null)
+      // Open files modal and load files for a gauge
+  const openFilesModal = async (row) => {
+    setFilesModalGauge(row)
+    setFilesModalOpen(true)
+    setFilesLoading(true)
+    try {
+      const reps = await fetch(`/gauges/${row.gauge_id}/reports`)
+      let reports = []
+      if (reps.ok) {
+        reports = await reps.json().catch(()=>[])
+        reports = Array.isArray(reports) ? reports : []
+      }
+      const all = []
+      for (const r of reports) {
+        const fr = await fetch(`/gauges/${row.gauge_id}/reports/${r.id}/files`)
+        if (fr.ok) {
+          const files = await fr.json().catch(()=>[])
+          if (Array.isArray(files) && files.length) {
+            all.push({ report: r, files })
+          }
+        }
+      }
+      setFilesModalData(all)
+    } catch {
+      message.error('Failed to load files')
+      setFilesModalData([])
+    } finally {
+      setFilesLoading(false)
+    }
+  }
+
+  // Open overlay viewer (tabs + preview)
+  const openViewer = async (row) => {
+    setViewerGauge(row)
+    setViewerOpen(true)
+    setViewerLoading(true)
+    try {
+      const reps = await fetch(`/gauges/${row.gauge_id}/reports`)
+      let reports = []
+      if (reps.ok) {
+        reports = await reps.json().catch(()=>[])
+        reports = Array.isArray(reports) ? reports : []
+      }
+      const all = []
+      for (const r of reports) {
+        const fr = await fetch(`/gauges/${row.gauge_id}/reports/${r.id}/files`)
+        const files = fr.ok ? await fr.json().catch(()=>[]) : []
+        const arr = Array.isArray(files) ? files : []
+        if (arr.length) {
+          all.push({ report: r, files: arr })
+        }
+      }
+      // If overall there is only one file, collapse to a single pseudo-tab
+      const totalFiles = all.reduce((n, it) => n + (Array.isArray(it.files) ? it.files.length : 0), 0)
+      if (totalFiles <= 1) {
+        const single = all.find(it => (it.files||[]).length)
+        setViewerData({ reports: single ? [{ report: { id: (single.report?.id), title: `Report for ${row.gauge_id}` }, files: single.files }] : [] })
+      } else {
+        setViewerData({ reports: all })
+      }
+    } catch {
+      setViewerData({ reports: [] })
+    } finally {
+      setViewerLoading(false)
+    }
+  }
+
+  // Delete a file from a report
+  const deleteFile = async (gauge_id, report_id, file_id) => {
+    try {
+      const res = await fetch(`/gauges/${gauge_id}/reports/${report_id}/files/${file_id}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error(await res.text() || 'Delete failed')
+      if (filesModalGauge) await openFilesModal(filesModalGauge)
+      message.success('File deleted')
+    } catch (e) {
+      message.error(typeof e?.message === 'string' ? e.message : 'Delete failed')
+    }
+  }
   const [suggestions, setSuggestions] = useState([])
   const [suggestLoading, setSuggestLoading] = useState(false)
 
@@ -105,7 +195,17 @@ export default function ReportManager() {
         }))
         total = edata.total || items.length
       }
-      const batch = items.map(r => ({ ...r, key: r.gauge_id }))
+      let batch = items.map(r => ({ ...r, key: r.gauge_id }))
+      // Merge cached updated_by/updated_at from localStorage so it persists after refresh
+      try {
+        const cache = JSON.parse(localStorage.getItem('gaugeUpdated') || '{}')
+        if (cache && typeof cache === 'object') {
+          batch = batch.map(row => {
+            const hit = cache[String(row.gauge_id)]
+            return hit ? { ...row, updated_by: hit.updated_by, updated_at: hit.updated_at } : row
+          })
+        }
+      } catch {}
       setTotalItems(total)
       setRows(batch)
     } catch (e) {
@@ -157,21 +257,40 @@ export default function ReportManager() {
 
   const onUpload = async (row, state) => {
     try {
-      if (!state.file) { message.warning('Select a file'); return }
+      if (!Array.isArray(state.files) || state.files.length === 0) { message.warning('Select at least one file'); return }
       if (!state.last || !state.freq) { message.warning('Provide last calibration date and frequency'); return }
       const fd = new FormData()
-      fd.append('report', state.file)
+      fd.append('title', (reportTitle || `Report for ${row.gauge_id}`))
+      fd.append('notes', (reportNotes || ''))
+      // Optional equipment fields (keeps legacy behavior)
       fd.append('last_calibration_date', dayjs(state.last).format('YYYY-MM-DD'))
       fd.append('calibration_freq_months', String(state.freq))
-      const user = (()=>{ try { return localStorage.getItem('username') || 'admin' } catch { return 'admin' } })()
-      fd.append('updated_by', user)
-      const res = await fetch(`/reports/${row.gauge_id}`, { method: 'POST', body: fd })
+      state.files.forEach(f => { if (f) fd.append('files', f) })
+      const res = await fetch(`/gauges/${row.gauge_id}/reports`, { method: 'POST', body: fd })
       if (!res.ok) throw new Error(await res.text() || 'Upload failed')
-      message.success('Report uploaded and equipment updated')
-      fetchRows()
+      const payload = await res.json().catch(()=>null)
+      message.success('Reports uploaded')
+      // Optionally open files viewer for this gauge to show results
+      try {
+        await openFilesModal(row)
+      } catch {}
+      // Refresh rows from backend, then overlay updated_by/updated_at so values remain visible
+      try { await fetchRows() } catch {}
+      try {
+        const uname = (()=>{ try { return localStorage.getItem('username') || 'admin' } catch { return 'admin' } })()
+        const nowIso = new Date().toISOString()
+        // update UI
+        setRows(prev => prev.map(r => r.gauge_id === row.gauge_id ? { ...r, updated_by: uname, updated_at: nowIso } : r))
+        // persist cache
+        const cache = (()=>{ try { return JSON.parse(localStorage.getItem('gaugeUpdated')||'{}') } catch { return {} } })()
+        cache[String(row.gauge_id)] = { updated_by: uname, updated_at: nowIso }
+        try { localStorage.setItem('gaugeUpdated', JSON.stringify(cache)) } catch {}
+      } catch {}
       setModalOpen(false)
       setActiveRow(null)
-      setSelectedFile(null)
+      setSelectedFiles([])
+      setReportTitle('')
+      setReportNotes('')
       try { form.resetFields() } catch {}
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Upload failed')
@@ -252,22 +371,21 @@ export default function ReportManager() {
         <Space size="small">
           <Button 
             type="text" 
+            onClick={() => openFilesModal(row)}
+            title="View uploaded files"
+          >Files</Button>
+          <Button 
+            type="text" 
             icon={<EyeOutlined />} 
-            disabled={!row.object_key} 
-            onClick={()=> {
-              setPdfViewerUrl(`/reports/${row.gauge_id}/view`)
-              setPdfViewerTitle(row.name_of_the_equipment || `Report - ${row.gauge_id}`)
-              setPdfViewerOpen(true)
-            }}
-            title="View Report"
+            onClick={()=> openViewer(row)}
+            title="View"
             style={{ color: '#1890ff' }}
           />
           <Button 
             type="text" 
             icon={<DownloadOutlined />} 
-            disabled={!row.object_key} 
-            onClick={()=> window.open(`/reports/${row.gauge_id}/download`, '_self')}
-            title="Download Report"
+            onClick={()=> window.open(`/gauges/${row.gauge_id}/reports/zip`, '_self')}
+            title="Download ZIP"
             style={{ color: '#52c41a' }}
           />
         </Space>
@@ -285,7 +403,7 @@ export default function ReportManager() {
           icon={<UploadOutlined />} 
           onClick={() => {
             setActiveRow(row)
-            setSelectedFile(null)
+            setSelectedFiles([])
             setModalOpen(true)
             const freqVal = (row.calibration_freq_months !== undefined && row.calibration_freq_months !== null)
               ? Number(row.calibration_freq_months)
@@ -386,11 +504,11 @@ export default function ReportManager() {
         key={activeRow ? `upload-${activeRow.gauge_id}` : 'upload-none'}
         title={activeRow ? `Upload calibration report - ${activeRow.name_of_the_equipment || ''}` : 'Upload calibration report'}
         open={modalOpen}
-        onCancel={() => { setModalOpen(false); setActiveRow(null); setSelectedFile(null); try { form.resetFields() } catch {} }}
+        onCancel={() => { setModalOpen(false); setActiveRow(null); setSelectedFiles([]); try { form.resetFields() } catch {} }}
         onOk={async () => {
           try {
             const values = await form.validateFields()
-            const state = { last: values.last, freq: values.freq, file: selectedFile }
+            const state = { last: values.last, freq: values.freq, files: selectedFiles }
             await onUpload(activeRow, state)
           } catch {}
         }}
@@ -412,19 +530,25 @@ export default function ReportManager() {
             })()
           }}
         >
-          <Form.Item label="Report file" required>
+          <Form.Item label="Title">
+            <Input placeholder={`Report for ${activeRow?.gauge_id || ''}`} value={reportTitle} onChange={(e)=>setReportTitle(e.target.value)} />
+          </Form.Item>
+          <Form.Item label="Notes">
+            <Input.TextArea rows={3} placeholder="Optional notes" value={reportNotes} onChange={(e)=>setReportNotes(e.target.value)} />
+          </Form.Item>
+          <Form.Item label="Report files" required>
             <Upload.Dragger
-              beforeUpload={(file)=>{ setSelectedFile(file); return false }}
-              maxCount={1}
-              accept=".pdf,.doc,.docx,.csv"
-              multiple={false}
+              beforeUpload={(file)=>{ setSelectedFiles(prev=>[...prev, file]); return false }}
+              maxCount={10}
+              accept=".pdf,.png,.jpg,.jpeg,.docx,.csv,.txt"
+              multiple
               onChange={(info)=>{
-                const f = info?.file?.originFileObj || (info?.fileList?.[0] && info.fileList[0].originFileObj) || info?.file
-                if (f) setSelectedFile(f)
+                const list = (info?.fileList || []).map(it => it.originFileObj || it.file || it)
+                setSelectedFiles(list.filter(Boolean))
               }}
             >
-              <p className="ant-upload-drag-icon">Drop file here or click to select</p>
-              <p className="ant-upload-hint">Allowed: PDF, DOC, DOCX, CSV</p>
+              <p className="ant-upload-drag-icon">Drop files here or click to select</p>
+              <p className="ant-upload-hint">Allowed: PDF, PNG, JPG, DOCX, CSV, TXT. Max 10 files.</p>
             </Upload.Dragger>
           </Form.Item>
           <Form.Item 
@@ -460,6 +584,158 @@ export default function ReportManager() {
             style={{ width: '100%', height: '80vh', border: 'none' }}
             title="PDF Viewer"
           />
+        )}
+      </Modal>
+
+      <Modal
+        title={filesModalGauge ? `Files - ${filesModalGauge.name_of_the_equipment || ''} (Gauge ${filesModalGauge.gauge_id})` : 'Files'}
+        open={filesModalOpen}
+        onCancel={() => { setFilesModalOpen(false); setFilesModalGauge(null); setFilesModalData([]) }}
+        footer={null}
+        width="80%"
+        destroyOnClose
+      >
+        {filesLoading ? (
+          <div>Loading...</div>
+        ) : (
+          filesModalData.length === 0 ? (
+            <div>No files found for this gauge</div>
+          ) : (
+            <div>
+              {filesModalData.map(({ report, files }) => (
+                <div key={`report-${report.id}`} style={{ marginBottom: 16 }}>
+                  <Divider orientation="left">{report.title || `Report ${report.id}`} <span style={{ marginLeft: 8, color:'#888' }}>{report.created_at ? new Date(report.created_at).toLocaleString() : ''}</span></Divider>
+                  <List
+                    size="small"
+                    dataSource={files}
+                    bordered
+                    renderItem={(f) => (
+                      <List.Item
+                        actions={[
+                          <a key="open" href={f.url} target="_blank" rel="noreferrer">Open</a>,
+                          <a key="stream" href={`/gauges/${filesModalGauge.gauge_id}/reports/${report.id}/files/${f.id}/stream?download=1`}>Download</a>,
+                          <Popconfirm key="del" title="Delete this file?" onConfirm={() => deleteFile(filesModalGauge.gauge_id, report.id, f.id)}>
+                            <a style={{ color:'#ff4d4f' }}>Delete</a>
+                          </Popconfirm>
+                        ]}
+                      >
+                        <List.Item.Meta
+                          title={f.original_name || f.content_type || 'file'}
+                          description={`${(f.size_bytes||0)} bytes • ${f.content_type || ''} • ${f.uploaded_at || ''}`}
+                        />
+                      </List.Item>
+                    )}
+                  />
+                </div>
+              ))}
+            </div>
+          )
+        )}
+      </Modal>
+
+      {/* PDF.js Modal viewer */}
+      <Modal
+        title={viewerGauge ? `Reports - ${viewerGauge.name_of_the_equipment || ''} (Gauge ${viewerGauge.gauge_id})` : 'Reports'}
+        open={viewerOpen}
+        onCancel={() => { setViewerOpen(false); setViewerGauge(null); setViewerData({ reports: [] }) }}
+        footer={null}
+        width="90%"
+        style={{ top: 20, padding: 0 }}
+        bodyStyle={{ padding: 0, margin: 0, display: 'flex', flexDirection: 'column', height: '90vh' }}
+        destroyOnClose
+        centered
+      >
+        {viewerLoading ? (
+          <div style={{ padding: 16 }}><Spin /> Loading...</div>
+        ) : (
+          (Array.isArray(viewerData.reports) && viewerData.reports.length) ? (
+            (() => {
+              const items = viewerData.reports
+              const ext = (name='') => String(name).toLowerCase().split('.').pop()
+              const isPdf = (f) => (f?.content_type||'').startsWith('application/pdf') || ['pdf'].includes(ext(f?.original_name||''))
+              const isImg = (f) => (f?.content_type||'').startsWith('image/') || ['png','jpg','jpeg','gif','webp','bmp'].includes(ext(f?.original_name||''))
+              const renderPreviewForFile = (entry, file) => {
+                const previewUrl = file ? `/gauges/${viewerGauge.gauge_id}/reports/${entry.report.id}/files/${file.id}/stream?download=0` : null
+                return (
+                  <div style={{ flex:1, minHeight:0, height:'100%', display:'flex' }}>
+                    {file ? (
+                      isPdf(file) ? (
+                        <div style={{ flex:1, minHeight:0 }}>
+                          <PdfJsViewer url={previewUrl} height={'calc(90vh - 56px)'} initialScale={1.0} />
+                        </div>
+                      ) : (
+                        isImg(file) ? (
+                          <img src={previewUrl} alt={file.original_name||'preview'} style={{ width: '100%', height: '100%', objectFit: 'contain', border: '1px solid #eee' }} />
+                        ) : (
+                          <div style={{ padding:16 }}>
+                            <div style={{ marginBottom:8 }}>Preview not available for this file type.</div>
+                            <a href={previewUrl} target="_blank" rel="noreferrer">Open in new tab</a>
+                          </div>
+                        )
+                      )
+                    ) : (
+                      <div style={{ height:'100%', width:'100%', display:'flex', alignItems:'center', justifyContent:'center', color:'#888' }}>No previewable file</div>
+                    )}
+                  </div>
+                )
+              }
+              // If only one report but it has multiple files, show per-file tabs
+              if (items.length === 1) {
+                const entry = items[0]
+                const files = Array.isArray(entry.files) ? entry.files : []
+                if (files.length > 1) {
+                  return (
+                    <div style={{ flex:1, minHeight:0, display:'flex', flexDirection:'column', height:'100%' }}>
+                      <Tabs
+                        style={{ flex:1, minHeight:0, display:'flex', flexDirection:'column', height:'100%' }}
+                        tabBarStyle={{ marginBottom: 8 }}
+                        items={files.map((file, idx) => ({
+                          key: String(file.id || idx),
+                          label: file.original_name || `File ${idx+1}`,
+                          children: (
+                            <div style={{ flex:1, minHeight:0, display:'flex', flexDirection:'column', height:'100%' }}>
+                              {renderPreviewForFile(entry, file)}
+                            </div>
+                          )
+                        }))}
+                      />
+                    </div>
+                  )
+                }
+                // Single file only
+                const first = files[0] || null
+                return (
+                  <div style={{ flex:1, minHeight:0, display:'flex', flexDirection:'column', height:'100%' }}>
+                    {renderPreviewForFile(entry, first)}
+                  </div>
+                )
+              }
+              // Multiple reports: keep per-report tabs as before
+              return (
+                <div style={{ flex:1, minHeight:0, display:'flex', flexDirection:'column', height:'100%' }}>
+                  <Tabs
+                    style={{ flex:1, minHeight:0, display:'flex', flexDirection:'column', height:'100%' }}
+                    tabBarStyle={{ marginBottom: 8 }}
+                    items={items.map((entry, idx) => ({
+                      key: String(entry.report.id || idx),
+                      label: entry.report.title || `Report ${entry.report.id}`,
+                      children: (
+                        <div style={{ flex:1, minHeight:0, display:'flex', flexDirection:'column', height:'100%' }}>
+                          {(() => {
+                            const files = Array.isArray(entry.files) ? entry.files : []
+                            const first = files.find(isPdf) || files.find(isImg) || files[0] || null
+                            return renderPreviewForFile(entry, first)
+                          })()}
+                        </div>
+                      )
+                    }))}
+                  />
+                </div>
+              )
+            })()
+          ) : (
+            <div>No reports/files for this gauge</div>
+          )
         )}
       </Modal>
     </div>

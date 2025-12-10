@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Card, Button, Space, Typography, Table, Input, message, Modal, Image, Tag, Pagination, AutoComplete } from 'antd'
-import { ReloadOutlined, QrcodeOutlined, DownloadOutlined, EyeOutlined } from '@ant-design/icons'
+import { Card, Button, Space, Typography, Table, Input, message, Modal, Image, Tag, Pagination, AutoComplete, Segmented } from 'antd'
+import { ReloadOutlined, DownloadOutlined, EyeOutlined } from '@ant-design/icons'
 
 export default function LabelManager() {
   const [items, setItems] = useState([])
@@ -12,6 +12,8 @@ export default function LabelManager() {
   const [sortBy, setSortBy] = useState(null)
   const [sortDir, setSortDir] = useState(null)
   const [preview, setPreview] = useState({ open: false, idfn: '', imgUrl: '' })
+  const [labelType, setLabelType] = useState('qr') // 'qr' | 'barcode' | 'rfid'
+  const canvasRef = useRef(null)
   const bcRef = useRef(null)
   const [suggestions, setSuggestions] = useState([])
   const [suggestLoading, setSuggestLoading] = useState(false)
@@ -80,26 +82,118 @@ export default function LabelManager() {
     finally { setSuggestLoading(false) }
   }
 
+  const renderRFIDCard = (idfn, name) => {
+    try {
+      const w = 480, h = 300
+      const canvas = document.createElement('canvas')
+      canvas.width = w
+      canvas.height = h
+      const ctx = canvas.getContext('2d')
+      // Background
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, w, h)
+      // Border
+      ctx.strokeStyle = '#1677ff'
+      ctx.lineWidth = 4
+      ctx.strokeRect(6, 6, w - 12, h - 12)
+      // Title
+      ctx.fillStyle = '#1677ff'
+      ctx.font = 'bold 28px Arial'
+      ctx.fillText('RFID CARD', 24, 54)
+      // Divider
+      ctx.strokeStyle = '#e6f4ff'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(24, 70)
+      ctx.lineTo(w - 24, 70)
+      ctx.stroke()
+      // IDFN label
+      ctx.fillStyle = '#333333'
+      ctx.font = 'bold 22px Arial'
+      ctx.fillText('IDFN:', 24, 120)
+      ctx.fillStyle = '#000000'
+      ctx.font = 'bold 34px Arial'
+      ctx.fillText(String(idfn || ''), 24, 165)
+      // Name
+      if (name) {
+        ctx.fillStyle = '#666666'
+        ctx.font = '16px Arial'
+        const label = 'Equipment:'
+        ctx.fillText(label, 24, 205)
+        ctx.fillStyle = '#000000'
+        ctx.font = '18px Arial'
+        const maxWidth = w - 48
+        let text = String(name)
+        if (ctx.measureText(text).width > maxWidth) {
+          while (text.length > 0 && ctx.measureText(text + '…').width > maxWidth) {
+            text = text.slice(0, -1)
+          }
+          text = text + '…'
+        }
+        ctx.fillText(text, 24, 232)
+      }
+      return canvas.toDataURL('image/png')
+    } catch {
+      return ''
+    }
+  }
+
   const openPreview = (record) => {
     const idfn = record?.idfn_no
     if (!idfn) { message.warning('No IDFN for this item'); return }
-    const url = `/qrcode/by-idfn/${encodeURIComponent(idfn)}.png?t=${Date.now()}`
-    setPreview({ open: true, idfn, imgUrl: url })
+    if (labelType === 'qr') {
+      const url = `/qrcode/by-idfn/${encodeURIComponent(idfn)}.png?t=${Date.now()}`
+      setPreview({ open: true, idfn, imgUrl: url })
+    } else if (labelType === 'barcode') {
+      const url = `/barcode/code128/by-idfn/${encodeURIComponent(idfn)}.png?t=${Date.now()}`
+      setPreview({ open: true, idfn, imgUrl: url })
+    } else {
+      const dataUrl = renderRFIDCard(idfn, record?.name_of_the_equipment)
+      setPreview({ open: true, idfn, imgUrl: dataUrl })
+    }
   }
 
-  const downloadBarcode = async (idfn) => {
+  const downloadLabel = async (record) => {
+    const idfn = record?.idfn_no || preview.idfn
     if (!idfn) return
-    const res = await fetch(`/qrcode/by-idfn/${encodeURIComponent(idfn)}.png`)
-    if (!res.ok) { message.error('Failed to generate barcode'); return }
-    const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `idfn-${idfn}-qr.png`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    URL.revokeObjectURL(url)
+    try {
+      if (labelType === 'qr') {
+        const res = await fetch(`/qrcode/by-idfn/${encodeURIComponent(idfn)}.png`)
+        if (!res.ok) { message.error('Failed to generate QR'); return }
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `idfn-${idfn}-qr.png`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+      } else if (labelType === 'barcode') {
+        const res = await fetch(`/barcode/code128/by-idfn/${encodeURIComponent(idfn)}.png`)
+        if (!res.ok) { message.error('Failed to generate barcode'); return }
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `idfn-${idfn}-barcode.png`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+      } else {
+        const dataUrl = renderRFIDCard(idfn, record?.name_of_the_equipment)
+        if (!dataUrl) { message.error('Failed to render RFID card'); return }
+        const a = document.createElement('a')
+        a.href = dataUrl
+        a.download = `idfn-${idfn}-rfid.png`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+      }
+    } catch {
+      message.error('Failed to download label')
+    }
   }
 
   const columns = [
@@ -155,15 +249,15 @@ export default function LabelManager() {
             icon={<EyeOutlined />} 
             onClick={() => openPreview(record)} 
             disabled={!record.idfn_no}
-            title="Preview QR Code"
+            title="Preview Label"
             style={{ color: '#1890ff' }}
           />
           <Button 
             type="text" 
             icon={<DownloadOutlined />} 
-            onClick={() => downloadBarcode(record.idfn_no)} 
+            onClick={() => downloadLabel(record)} 
             disabled={!record.idfn_no}
-            title="Download QR Code"
+            title="Download Label"
             style={{ color: '#52c41a' }}
           />
         </Space>
@@ -199,7 +293,16 @@ export default function LabelManager() {
               />
             </AutoComplete>
           </div>
-          <div className="action-buttons">
+          <div className="action-buttons" style={{ display:'flex', alignItems:'center', gap:12 }}>
+            <Segmented 
+              value={labelType}
+              onChange={setLabelType}
+              options={[
+                { label: 'QR', value: 'qr' },
+                { label: 'Barcode', value: 'barcode' },
+                { label: 'RFID', value: 'rfid' },
+              ]}
+            />
             <Button 
               icon={<ReloadOutlined />} 
               onClick={() => { setCurrentPage(1); fetchEquipment({ current: 1, pageSize: pageSize, reset: true }) }}
@@ -249,13 +352,13 @@ export default function LabelManager() {
       </div>
 
       <Modal
-        title={`QR Preview (IDFN ${preview.idfn || ''})`}
+        title={`Label Preview (IDFN ${preview.idfn || ''})`}
         open={preview.open}
         onCancel={() => setPreview({ open: false, idfn: '', imgUrl: '' })}
         footer={
           <Space>
             <Button onClick={() => setPreview({ open: false, idfn: '', imgUrl: '' })}>Close</Button>
-            <Button type="primary" onClick={() => downloadBarcode(preview.idfn)} disabled={!preview.idfn}>Print QR</Button>
+            <Button type="primary" onClick={() => downloadLabel({ idfn_no: preview.idfn })} disabled={!preview.idfn}>Print</Button>
           </Space>
         }
         className="professional-modal"

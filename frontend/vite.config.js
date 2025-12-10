@@ -48,6 +48,11 @@ export default defineConfig({
         changeOrigin: true,
         secure: false
       },
+      '/gauges': {
+        target: 'http://localhost:5756',
+        changeOrigin: true,
+        secure: false
+      },
       '/reports': {
         target: 'http://localhost:5756',
         changeOrigin: true,
@@ -64,6 +69,17 @@ export default defineConfig({
         secure: false
       },
       '/admin/free-all-tools': {
+        target: 'http://localhost:5756',
+        changeOrigin: true,
+        secure: false
+      },
+      // Proxy specific admin API endpoints (do NOT proxy /admin SPA routes)
+      '/admin/email-logs': {
+        target: 'http://localhost:5756',
+        changeOrigin: true,
+        secure: false
+      },
+      '/admin/due-reminder': {
         target: 'http://localhost:5756',
         changeOrigin: true,
         secure: false
