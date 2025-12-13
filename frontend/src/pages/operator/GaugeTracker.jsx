@@ -95,12 +95,11 @@ export default function OperatorGaugeTracker() {
 
   const columns = useMemo(() => [
     { 
-      title: 'ID', 
-      dataIndex: 'id', 
-      key: 'id', 
-      width: 80, 
+      title: 'Sl. No.', 
+      key: 'sl_no', 
+      width: 90, 
       align: 'center',
-      sorter: true
+      render: (_val, _row, index) => ((currentPage - 1) * pageSize) + index + 1,
     },
     { 
       title: 'Equipment', 
@@ -223,7 +222,7 @@ export default function OperatorGaugeTracker() {
         )
       }
     },
-  ], [username])
+  ], [username, currentPage, pageSize])
 
   const filteredRows = useMemo(() => {
     return rows.filter(r => {

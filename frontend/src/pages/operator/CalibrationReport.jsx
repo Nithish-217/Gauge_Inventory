@@ -171,7 +171,7 @@ export default function CalibrationReport() {
   }
 
   const columns = useMemo(() => [
-    { title: 'Sl. No.', dataIndex: 'gauge_id', key: 'gauge_id', width: 90 },
+    { title: 'Sl. No.', key: 'sl_no', width: 90, align: 'center', render: (_val, _row, index) => index + 1 },
     { title: 'Equipment', dataIndex: 'name_of_the_equipment', key: 'name', ellipsis: true },
     { 
       title: 'IDFN', 
