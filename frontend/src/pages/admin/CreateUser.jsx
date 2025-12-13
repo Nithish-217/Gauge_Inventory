@@ -3,7 +3,7 @@ import { Table, Button, Input, Select, Space, Modal, Form, Input as AntInput, me
 import { DeleteOutlined, KeyOutlined, PlusOutlined, ReloadOutlined, EditOutlined, UserOutlined, LockOutlined } from '@ant-design/icons'
 
 export default function CreateUser() {
-  const [form, setForm] = useState({ username: '', email: '', password: '', role: 'operator', employee_id: '' })
+  const [form, setForm] = useState({ username: '', email: '', password: '', role: undefined, employee_id: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -69,7 +69,7 @@ export default function CreateUser() {
       }
       const data = await res.json()
       setSuccess(`User created with id ${data.id}`)
-      setForm({ username: '', email: '', password: '', role: 'operator', employee_id: '' })
+      setForm({ username: '', email: '', password: '', role: undefined, employee_id: '' })
       message.success('User created')
       fetchUsers()
       setShowCreate(false)
@@ -311,7 +311,7 @@ export default function CreateUser() {
           </div>
           <div className="action-buttons">
             <Button icon={<ReloadOutlined />} onClick={fetchUsers}>Refresh</Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={()=>setShowCreate(true)}>Create User</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={()=>{ setForm({ username:'', email:'', password:'', role: undefined, employee_id:'' }); setError(''); setSuccess(''); setShowCreate(true) }}>Create User</Button>
           </div>
         </div>
 
@@ -324,7 +324,7 @@ export default function CreateUser() {
         className="professional-modal"
         width={600}
       >
-        <form onSubmit={onSubmit}>
+        <form onSubmit={onSubmit} autoComplete="off">
           <div className="form-grid">
             <div className="form-field">
               <label className="form-label required">Username</label>
@@ -332,6 +332,7 @@ export default function CreateUser() {
                 className="form-input"
                 id="username"
                 name="username"
+                autoComplete="off"
                 value={form.username}
                 onChange={onChange}
                 placeholder="Enter username"
@@ -344,6 +345,7 @@ export default function CreateUser() {
                 id="email"
                 name="email"
                 type="email"
+                autoComplete="off"
                 value={form.email}
                 onChange={onChange}
                 placeholder="Enter email address"
@@ -351,21 +353,24 @@ export default function CreateUser() {
             </div>
             <div className="form-field">
               <label className="form-label required">Password</label>
-              <input
+              <AntInput.Password
                 className="form-input"
                 id="password"
                 name="password"
-                type="password"
+                autoComplete="new-password"
                 value={form.password}
                 onChange={onChange}
                 placeholder="Enter password"
+                visibilityToggle
               />
             </div>
             <div className="form-field">
               <label className="form-label required">Role</label>
               <Select 
                 id="role" 
-                value={form.role} 
+                value={form.role}
+                placeholder="Select role"
+                allowClear
                 onChange={(v)=>setForm(f=>({...f, role:v}))} 
                 options={[{value:'admin', label:'Admin'},{value:'operator', label:'Operator'}]}
                 style={{ width: '100%' }}
