@@ -10,7 +10,8 @@ export default function CalibrationPlanner() {
   const [detailModal, setDetailModal] = React.useState({ open: false, date: '', events: [] })
   const [value, setValue] = React.useState(dayjs())
   const [mode, setMode] = React.useState('month') // 'month' | 'year'
-  const [requestedGaugeIds, setRequestedGaugeIds] = React.useState(new Set()) // Set of gauge_ids that have been requested
+  const [heldGaugeIds, setHeldGaugeIds] = React.useState(new Set()) // gauges currently held by operator
+  const [heldByMap, setHeldByMap] = React.useState({}) // { gauge_id: operator_username }
   
   // Calculate KPIs for the selected period
   const kpis = React.useMemo(() => {
@@ -81,7 +82,9 @@ export default function CalibrationPlanner() {
     }
     for (const r of arr) {
       const eqName = r.name_of_the_equipment || `Gauge ${r.gauge_id}`
-      const eq = `[${r.gauge_id ?? '-'}] ${eqName}`
+      const op = heldByMap && r.gauge_id != null ? heldByMap[r.gauge_id] : undefined
+      const opSuffix = op ? ` — ${op}` : ''
+      const eq = `[${r.idfn_no ?? '-'}] ${eqName}${opSuffix}`
       if (r.date_of_last_calibration) {
         push(r.date_of_last_calibration, { type: 'success', label: `Last: ${eq}`, eq, gauge_id: r.gauge_id })
       }
@@ -132,8 +135,18 @@ export default function CalibrationPlanner() {
         if (chunk.length < pageLimit) break
         page += 1
       }
-      const gaugeIds = new Set(allRequests.map(r => r.gauge_id).filter(id => id != null))
-      setRequestedGaugeIds(gaugeIds)
+      // Only consider currently held gauges: accepted & not returned
+      const active = allRequests.filter(r => String(r.status||'').toLowerCase() === 'accepted' && !r.returned_at)
+      const ids = new Set(active.map(r => r.gauge_id).filter(id => id != null))
+      const by = {}
+      for (const r of active) {
+        const who = (r.requested_by || r.accepted_by || '').toString()
+        if (r.gauge_id != null && who && !by[r.gauge_id]) by[r.gauge_id] = who
+      }
+      setHeldGaugeIds(ids)
+      setHeldByMap(by)
+      // Rebuild events to include operator suffixes
+      setEventMap(buildEvents(items))
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('Failed to fetch requested gauges:', e)
@@ -144,6 +157,13 @@ export default function CalibrationPlanner() {
     fetchAll()
     fetchRequestedGauges()
   }, [])
+
+  // When heldByMap changes, rebuild event labels with operator names
+  React.useEffect(() => {
+    if (items && items.length) {
+      setEventMap(buildEvents(items))
+    }
+  }, [heldByMap])
 
   const adminName = React.useMemo(() => {
     try { return localStorage.getItem('username') || 'Admin' } catch { return 'Admin' }
@@ -402,10 +422,10 @@ export default function CalibrationPlanner() {
           dataSource={detailModal.events}
           renderItem={(ev)=>{
             const isDue = ev.type === 'processing'
-            const hasBeenRequested = ev.gauge_id && requestedGaugeIds.has(ev.gauge_id)
+            const hasActiveHolder = ev.gauge_id && heldGaugeIds.has(ev.gauge_id)
             return (
               <List.Item style={{padding:'6px 0'}}
-                actions={isDue && ev.gauge_id && hasBeenRequested ? [
+                actions={isDue && ev.gauge_id && hasActiveHolder ? [
                   <Button key="remind" type="link" onClick={()=>sendReminder(ev.gauge_id)}>Send Reminder</Button>
                 ] : undefined}
               >

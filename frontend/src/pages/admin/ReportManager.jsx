@@ -385,6 +385,13 @@ export default function ReportManager() {
     try {
       if (!Array.isArray(state.files) || state.files.length === 0) { message.warning('Select at least one file'); return }
       if (!state.last || !state.freq) { message.warning('Provide last calibration date and frequency'); return }
+      // Client-side size validation (20 MB per file)
+      const MAX_BYTES = 20 * 1024 * 1024
+      const tooBig = (state.files || []).find(f => (f && typeof f.size === 'number' && f.size > MAX_BYTES))
+      if (tooBig) {
+        message.error('File size must not exceed 20 MB')
+        return
+      }
       const fd = new FormData()
       fd.append('title', (state.folder || reportTitle || `Report for ${row.gauge_id}`))
       fd.append('notes', (reportNotes || ''))
@@ -393,7 +400,16 @@ export default function ReportManager() {
       fd.append('calibration_freq_months', String(state.freq))
       state.files.forEach(f => { if (f) fd.append('files', f) })
       const res = await fetch(`/gauges/${row.gauge_id}/reports`, { method: 'POST', body: fd })
-      if (!res.ok) throw new Error(await res.text() || 'Upload failed')
+      if (!res.ok) {
+        const raw = await res.text()
+        let msg = raw || 'Upload failed'
+        try {
+          const j = JSON.parse(raw)
+          msg = j?.detail || msg
+        } catch {}
+        const norm = /413|exceeds\s*20\s*MB/i.test(msg) ? 'File size must not exceed 20 MB' : msg
+        throw new Error(norm)
+      }
       const payload = await res.json().catch(()=>null)
       message.success('Reports uploaded')
       // Optionally open files viewer for this gauge to show results
@@ -419,7 +435,9 @@ export default function ReportManager() {
       setReportNotes('')
       try { form.resetFields() } catch {}
     } catch (e) {
-      message.error(typeof e?.message === 'string' ? e.message : 'Upload failed')
+      const m = typeof e?.message === 'string' ? e.message : 'Upload failed'
+      const friendly = /413|exceeds\s*20\s*MB/i.test(m) ? 'File size must not exceed 20 MB' : m
+      message.error(friendly)
     }
   }
 
@@ -519,7 +537,7 @@ export default function ReportManager() {
         </Space>
       )
     },
-  ], [])
+  ], [currentPage, pageSize])
 
   return (
     <div className="equipment-table-container">
@@ -652,17 +670,27 @@ export default function ReportManager() {
           </Form.Item> */}
           <Form.Item label="Report files" required>
             <Upload.Dragger
-              beforeUpload={(file)=>{ setSelectedFiles(prev=>[...prev, file]); return false }}
+              beforeUpload={(file)=>{ 
+                const MAX_BYTES = 20 * 1024 * 1024
+                if (file && typeof file.size === 'number' && file.size > MAX_BYTES) {
+                  message.error('File size must not exceed 20 MB')
+                  return Upload.LIST_IGNORE
+                }
+                setSelectedFiles(prev=>[...prev, file]); 
+                return false 
+              }}
               maxCount={10}
               accept=".pdf,.png,.jpg,.jpeg,.docx,.csv,.txt"
               multiple
               onChange={(info)=>{
+                const MAX_BYTES = 20 * 1024 * 1024
                 const list = (info?.fileList || []).map(it => it.originFileObj || it.file || it)
-                setSelectedFiles(list.filter(Boolean))
+                const filtered = list.filter(f => f && (typeof f.size !== 'number' || f.size <= MAX_BYTES))
+                setSelectedFiles(filtered.filter(Boolean))
               }}
             >
               <p className="ant-upload-drag-icon">Drop files here or click to select</p>
-              <p className="ant-upload-hint">Allowed: PDF, PNG, JPG, DOCX, CSV, TXT. Max 10 files.</p>
+              <p className="ant-upload-hint">Allowed: PDF, PNG, JPG, DOCX, CSV, TXT. Max 10 files. Max size per file: 20 MB.</p>
             </Upload.Dragger>
           </Form.Item>
           <Form.Item 
