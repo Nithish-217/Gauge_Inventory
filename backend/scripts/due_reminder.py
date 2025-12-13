@@ -27,6 +27,9 @@ from app.database import SessionLocal  # noqa: E402
 
 def get_env():
     # Load .env if present (explicit path to backend folder for scheduler contexts)
+    sent_ops = 0
+    sent_admins = 0
+    failed = 0
     try:
         env_path = os.path.join(BACKEND_DIR, ".env")
         load_dotenv(dotenv_path=env_path, override=False)
@@ -138,7 +141,7 @@ def main():
         ), {"due": target_due}).mappings().all()
 
         if not rows:
-            return 0
+            return {"checked": 0, "sent_operator": 0, "sent_admin": 0, "failed": 0}
 
         unassigned = []  # list of dicts: {gauge_id, due_date}
 
@@ -183,10 +186,12 @@ def main():
                         try:
                             send_email(smtp_host, smtp_port, smtp_user, smtp_pass, email_from, user["email"], subject, body)
                             _log_email(db, user["email"], subject, body, "sent", None, {"source": "due_reminder", "gauge_id": gid})
+                            sent_ops += 1
                         except Exception as e:
                             _log_email(db, user.get("email") or "", subject, body, "failed", str(e), {"source": "due_reminder", "gauge_id": gid})
                             # Continue processing others even if one email fails
                             print(f"Failed to email operator {operator_username} for gauge {gid}: {e}", file=sys.stderr)
+                            failed += 1
                         continue
 
             # Fallback: if not found in gauge_requests, check gauge_tracker current holder
@@ -214,9 +219,11 @@ def main():
                 try:
                     send_email(smtp_host, smtp_port, smtp_user, smtp_pass, email_from, gt["email"], subject, body)
                     _log_email(db, gt["email"], subject, body, "sent", None, {"source": "due_reminder", "gauge_id": gid})
+                    sent_ops += 1
                 except Exception as e:
                     _log_email(db, gt.get("email") or "", subject, body, "failed", str(e), {"source": "due_reminder", "gauge_id": gid})
                     print(f"Failed to email operator {operator_username} for gauge {gid} (gt): {e}", file=sys.stderr)
+                    failed += 1
                 continue
 
             # If not assigned or no email found, add to unassigned list
@@ -248,12 +255,20 @@ def main():
                     try:
                         send_email(smtp_host, smtp_port, smtp_user, smtp_pass, email_from, admin["email"], subject, body)
                         _log_email(db, admin["email"], subject, body, "sent", None, {"source": "due_reminder", "unassigned_count": len(unassigned)})
+                        sent_admins += 1
                     except Exception as e:
                         _log_email(db, admin.get("email") or "", subject, body, "failed", str(e), {"source": "due_reminder", "unassigned_count": len(unassigned)})
                         print(f"Failed to email admin {admin.get('username')}: {e}", file=sys.stderr)
+                        failed += 1
 
         db.commit()
-        return 0
+        return {
+            "checked": len(rows),
+            "sent_operator": sent_ops,
+            "sent_admin": sent_admins,
+            "failed": failed,
+            "unassigned": len(unassigned),
+        }
     finally:
         db.close()
 

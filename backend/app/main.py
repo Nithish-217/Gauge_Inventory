@@ -1514,8 +1514,13 @@ async def set_due_reminder_time(request: Request, time: str | None = None):
 def run_due_reminder_now():
     try:
         os.environ["DAYS_BEFORE_DUE"] = str(_due_reminder_offset_days)
-        due_reminder_script.main()
-        return {"success": True}
+        result = due_reminder_script.main()
+        # Ensure result is a dict with useful fields
+        if isinstance(result, dict):
+            out = {"success": True}
+            out.update(result)
+            return out
+        return {"success": True, "result": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"due_reminder failed: {e}")
 

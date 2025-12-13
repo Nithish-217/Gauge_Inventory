@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { HomeOutlined, UserOutlined, TeamOutlined, AppstoreOutlined, CalendarOutlined, AimOutlined, FileTextOutlined, TagOutlined } from '@ant-design/icons'
+import { HomeOutlined, UserOutlined, TeamOutlined, AppstoreOutlined, CalendarOutlined, AimOutlined, FileTextOutlined, TagOutlined, MailOutlined } from '@ant-design/icons'
 
 export default function AdminDashboard() {
   const navigate = useNavigate()
@@ -95,7 +95,7 @@ export default function AdminDashboard() {
           </NavLink>
           <NavLink to="email-config" className={({isActive}) => `menu-item${isActive ? ' active' : ''}`}>
             <span style={{display:'inline-flex',alignItems:'center',gap:6}}>
-              <span className="anticon" aria-hidden="true">✉️</span>
+              <MailOutlined />
               <span>Email Config</span>
             </span>
           </NavLink>
