@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Table, Button, Input, InputNumber, Space, message, Modal, Pagination, AutoComplete, Tag } from 'antd'
-import { loadJsPDF, buildAutoTablePageHook, formatNow } from '../utils/pdfExport.js'
+import { loadJsPDF, makeHeaderFooter, buildAutoTablePageHook, formatNow } from '../utils/pdfExport.js'
 import { ReloadOutlined, PlusOutlined, EditOutlined, DeleteOutlined, ShoppingCartOutlined } from '@ant-design/icons'
 
 const { TextArea } = Input
@@ -69,6 +69,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
   const [locLoading, setLocLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [holderMap, setHolderMap] = useState({}) // { [gauge_id]: string (holder name) }
+  const qDebounceRef = useRef(null)
   
 
   useEffect(() => {
@@ -218,6 +219,16 @@ export default function EquipmentTable({ mode = 'admin' }) {
   }
 
   useEffect(() => { fetchData({ page: currentPage - 1 }) }, [currentPage, pageSize, sortBy, sortDir])
+
+  // Debounced server search on q changes
+  useEffect(() => {
+    if (qDebounceRef.current) clearTimeout(qDebounceRef.current)
+    qDebounceRef.current = setTimeout(() => {
+      setCurrentPage(1)
+      fetchData({ page: 0, reset: true })
+    }, 300)
+    return () => { if (qDebounceRef.current) clearTimeout(qDebounceRef.current) }
+  }, [q])
 
   // If location filter is cleared, reset results immediately
   useEffect(() => {
@@ -751,10 +762,10 @@ export default function EquipmentTable({ mode = 'admin' }) {
       if (all.length === 0) { message.info('No records to export'); return }
       const doc = new jsPDF({ orientation: 'landscape' })
       const head = [[
-        'Gauge ID', 'Description', 'Make/Model', 'Range', 'Location', 'IDFN', 'Last Cal.', 'Next Due', 'PCR'
+        'Sl. No.', 'Description', 'Make/Model', 'Range', 'Location', 'IDFN', 'Last Cal.', 'Next Due', 'PCR'
       ]]
-      const body = all.map(r => [
-        String(r.gauge_id ?? ''),
+      const body = all.map((r, idx) => [
+        String(idx + 1),
         String(r.name_of_the_equipment ?? ''),
         String(r.make_model ?? ''),
         (Array.isArray(r.ranges) && r.ranges.length ? r.ranges.join(', ') : ''),
@@ -1153,6 +1164,7 @@ export default function EquipmentTable({ mode = 'admin' }) {
                 allowClear
                 loading={suggestLoading}
                 placeholder="Search by name or IDFN"
+                onChange={(e)=> setQ(e.target.value)}
                 onSearch={() => { setCurrentPage(1); fetchData({ page: 0, reset: true }) }}
                 enterButton
               />

@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react'
-import { Card, Row, Col, Spin, message, Empty } from 'antd'
+import React, { useEffect, useState, useRef } from 'react'
+import { Card, Row, Col, Spin, message, Empty, Button } from 'antd'
+import { exportElementToPDF, formatNow } from '../../utils/pdfExport'
 import {
   LineChart,
   Line,
@@ -45,6 +46,8 @@ export default function Analytics() {
   const [mostUsedTools, setMostUsedTools] = useState([])
   const [operatorAnalytics, setOperatorAnalytics] = useState(null)
   const [error, setError] = useState(null)
+  const containerRef = useRef(null)
+  const [returnConditionCounts, setReturnConditionCounts] = useState({ good: 0, bad: 0, needsRepair: 0, custom: 0 })
 
   useEffect(() => {
     fetchAnalytics()
@@ -91,6 +94,33 @@ export default function Analytics() {
       setReturnsRejects(returnsRejectsData)
       setMostUsedTools(Array.isArray(mostUsedData) ? mostUsedData : [])
       setOperatorAnalytics(operatorData)
+
+      // Also derive Returns Condition distribution from Gauge Tracker logs (newest first on action taken)
+      // We will page through tracker data sorted by returned_at desc (fallback to requested_at)
+      try {
+        const pageLimit = 500
+        let offset = 0
+        const counts = { good: 0, bad: 0, needsRepair: 0, custom: 0 }
+        for (let i = 0; i < 40; i++) {
+          const p = new URLSearchParams({ limit: String(pageLimit), offset: String(offset), sort_by: 'returned_at', sort_dir: 'desc' })
+          const res = await fetchWithTimeout(`/gauge-tracker?${p.toString()}`)
+          if (!res.ok) break
+          const data = await res.json().catch(()=>[])
+          const arr = Array.isArray(data) ? data : []
+          for (const row of arr) {
+            if ((row.status||'').toLowerCase() === 'returned') {
+              const label = String(row.return_status || '').toLowerCase()
+              if (label === 'good') counts.good++
+              else if (label === 'bad') counts.bad++
+              else if (label === 'needs repair') counts.needsRepair++
+              else if (label) counts.custom++
+            }
+          }
+          if (arr.length < pageLimit) break
+          offset += pageLimit
+        }
+        setReturnConditionCounts(counts)
+      } catch {}
     } catch (e) {
       console.error('Analytics fetch error:', e)
       setError(e.message || 'Failed to load analytics')
@@ -136,12 +166,12 @@ export default function Analytics() {
     Returned: item.returned_count || 0
   }))
 
-  // Returns condition pie chart data
+  // Returns condition pie chart data (derived from gauge tracker)
   const returnsConditionData = [
-    { name: 'Good', value: summary.returns_good || 0 },
-    { name: 'Bad', value: summary.returns_bad || 0 },
-    { name: 'Needs Repair', value: summary.returns_needs_repair || 0 },
-    { name: 'Custom', value: summary.returns_custom || 0 }
+    { name: 'Good', value: Number(returnConditionCounts.good||0) },
+    { name: 'Bad', value: Number(returnConditionCounts.bad||0) },
+    { name: 'Needs Repair', value: Number(returnConditionCounts.needsRepair||0) },
+    { name: 'Custom', value: Number(returnConditionCounts.custom||0) }
   ].filter(item => item.value > 0)
 
   // Status distribution pie chart
@@ -162,7 +192,18 @@ export default function Analytics() {
 
   return (
     <div style={{ padding: '20px' }}>
-      <h3 style={{ marginBottom: '24px', fontSize: '24px', fontWeight: 600, color: '#262626' }}>Analytics Dashboard</h3>
+      <div style={{ display:'flex', alignItems:'center', gap: 12, marginBottom: '16px' }}>
+        <h3 style={{ margin: 0, fontSize: '24px', fontWeight: 600, color: '#262626', flex: 1 }}>Analytics Dashboard</h3>
+        <Button
+          type="primary"
+          size="small"
+          style={{ padding: '0 10px', width: 'auto' }}
+          onClick={async ()=>{ try { await exportElementToPDF(containerRef.current, `analytics_${formatNow()}.pdf`, 'Analytics Dashboard') } catch(e) { message.error('Failed to export PDF') } }}
+        >
+          Download PDF
+        </Button>
+      </div>
+      <div ref={containerRef}>
 
       {/* KPI Summary */}
       <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
@@ -438,6 +479,7 @@ export default function Analytics() {
           </ResponsiveContainer>
         </Card>
       )}
+      </div>
     </div>
   )
 }

@@ -3980,6 +3980,23 @@ async def create_report_with_files(
         try: db.rollback()
         except Exception: pass
 
+    # Resolve gauge name and idfn for folder path construction
+    eq = db.execute(text("SELECT idfn_no, name_of_the_equipment FROM public.equipment_used_for_calibration WHERE gauge_id = :gid"), {"gid": gauge_id}).mappings().first()
+    gauge_name = (eq or {}).get("name_of_the_equipment") or "gauge"
+    idfn_no = (eq or {}).get("idfn_no") or str(gauge_id)
+
+    def _snake(s: str) -> str:
+        import re as _re
+        s = (s or "").strip().lower()
+        s = _re.sub(r"\s+", "_", s)
+        s = _re.sub(r"[^a-z0-9-_]", "_", s)
+        s = _re.sub(r"_+", "_", s)
+        return s or "folder"
+
+    title_norm = _snake(title)
+    # Use gauge_id-based path expected by UI (no extra 'reports' segment)
+    gauge_key = f"reports/gauges/{gauge_id}"
+
     storage_mode = get_report_storage_mode()
     saved: list[dict] = []
     try:
@@ -3995,14 +4012,12 @@ async def create_report_with_files(
             if len(data) > MAX_FILE_BYTES:
                 raise HTTPException(status_code=413, detail=f"File {up.filename} exceeds 20MB limit")
 
-            # extension
-            fname = (up.filename or "").lower()
-            ext = ""
-            for e in (".pdf", ".png", ".jpg", ".jpeg", ".docx", ".csv", ".txt"):
-                if fname.endswith(e):
-                    ext = ".jpg" if e == ".jpeg" else e
-                    break
-            object_key = f"gauges/{gauge_id}/reports/{report_id}/{uuid.uuid4().hex}{ext}"
+            # Use original filename under the structured folder path
+            orig_name = up.filename or f"file_{uuid.uuid4().hex}"
+            # Security: prevent traversal
+            if ".." in orig_name or "/" in orig_name or "\\" in orig_name:
+                orig_name = orig_name.split("/")[-1].split("\\")[-1]
+            object_key = f"{gauge_key}/{title_norm}/{orig_name}"
 
             if storage_mode == "local":
                 base_dir = get_report_storage_dir()

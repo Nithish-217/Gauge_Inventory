@@ -45,7 +45,7 @@ root.render(
           <Route path="/" element={<Layout />}> 
             <Route index element={<App />} />
             <Route path="admin" element={<AdminDashboard />} >
-              <Route index element={<AdminHome />} />
+              <Route index element={<Navigate to="gauge-inventory" replace />} />
               <Route path="create-user" element={<CreateUser />} />
               <Route path="gauge-inventory" element={<GaugeInventory />} />
               <Route path="calibration-planner" element={<CalibrationPlanner />} />

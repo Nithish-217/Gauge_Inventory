@@ -39,15 +39,23 @@ export default function App() {
         signal: controller.signal,
       }).finally(() => clearTimeout(timeoutId))
       if (!res.ok) {
-        // try to parse structured error first
-        try {
-          const errJson = await res.json()
-          const msg = errJson?.detail || errJson?.message || 'Login failed'
-          throw new Error(msg)
-        } catch {
-          const txt = await res.text()
-          throw new Error(txt || 'Login failed')
+        // Read body ONCE to avoid "body stream already read" errors
+        const contentType = (res.headers.get('content-type') || '').toLowerCase()
+        const raw = await res.text().catch(() => '')
+        let msg = 'Login failed'
+        if (contentType.includes('application/json')) {
+          try {
+            const j = raw ? JSON.parse(raw) : {}
+            msg = j?.detail || j?.message || msg
+          } catch {}
+        } else if (raw) {
+          msg = raw
         }
+        // Friendly message on 401
+        if (res.status === 401) {
+          msg = 'Incorrect username or password. Login failed. Please try again!'
+        }
+        throw new Error(msg)
       }
       const data = await res.json()
       if (data && data.success) {

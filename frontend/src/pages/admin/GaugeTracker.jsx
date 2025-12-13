@@ -1,19 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Table, Button, Space, message, Tag, Popover, Select, DatePicker, Pagination, Input, Tabs, AutoComplete } from 'antd'
-import { loadJsPDF, makeHeaderFooter, formatNow } from '../../utils/pdfExport.js'
+import { loadJsPDF, buildAutoTablePageHook, formatNow } from '../../utils/pdfExport.js'
 
 import { FilterOutlined, ReloadOutlined, CheckOutlined, CloseOutlined, UndoOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import Analytics from './Analytics'
 
 export default function GaugeTracker() {
-  const [rows, setRows] = useState([])
+  const [rows, setRows] = useState([]) // current page slice
+  const [allRows, setAllRows] = useState([]) // full dataset for client-side sort/paginate
   const [loading, setLoading] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
   const [totalItems, setTotalItems] = useState(0)
   const [pageSize, setPageSize] = useState(10)
-  const [sortBy, setSortBy] = useState(null)
-  const [sortDir, setSortDir] = useState(null)
+  const [sortBy, setSortBy] = useState('returned_at')
+  const [sortDir, setSortDir] = useState('desc')
   const scrollRef = useRef(null)
   const [filterOpen, setFilterOpen] = useState(false)
   const [statusFilter, setStatusFilter] = useState(undefined) // 'requested' | 'accepted' | 'rejected' | 'returned'
@@ -23,41 +24,35 @@ export default function GaugeTracker() {
   const nameFetchRef = useRef(0)
   const [exporting, setExporting] = useState(false)
 
-  const limit = pageSize
   const fetchRows = async (opts = {}) => {
     setLoading(true)
     try {
-      const cur = typeof opts.page === 'number' ? opts.page : (currentPage - 1)
-      const params = new URLSearchParams({ limit: String(limit), offset: String(cur * limit) })
-      if (sortBy) params.set('sort_by', sortBy)
-      if (sortDir) params.set('sort_dir', sortDir)
-      // Date range filter
-      if (Array.isArray(dateFilter) && dateFilter[0] && dateFilter[1]) {
-        params.set('from_date', dateFilter[0].format('YYYY-MM-DD'))
-        params.set('to_date', dateFilter[1].format('YYYY-MM-DD'))
-      }
-      // Equipment name contains (server-side)
-      if (nameFilter && nameFilter.trim().length > 0) {
-        params.set('name', nameFilter.trim())
-      }
-      const res = await fetch(`/gauge-tracker?${params.toString()}`)
-      if (!res.ok) {
-        try {
-          const txt = await res.text()
-          message.error(txt || 'Failed to load gauge tracker')
-        } catch {
-          message.error('Failed to load gauge tracker')
+      // Fetch ALL rows in pages to allow correct client-side sorting by the Actions timestamp
+      const pageLimit = 500
+      let offset = 0
+      const acc = []
+      for (let i = 0; i < 200; i++) {
+        const params = new URLSearchParams({ limit: String(pageLimit), offset: String(offset) })
+        // Server-side basic sort to help, but final ordering is client-side
+        if (sortBy) params.set('sort_by', sortBy)
+        if (sortDir) params.set('sort_dir', sortDir)
+        if (Array.isArray(dateFilter) && dateFilter[0] && dateFilter[1]) {
+          params.set('from_date', dateFilter[0].format('YYYY-MM-DD'))
+          params.set('to_date', dateFilter[1].format('YYYY-MM-DD'))
         }
-        setRows([])
-        setTotalItems(0)
-        return
+        if (nameFilter && nameFilter.trim().length > 0) {
+          params.set('name', nameFilter.trim())
+        }
+        const res = await fetch(`/gauge-tracker?${params.toString()}`)
+        if (!res.ok) break
+        const data = await res.json().catch(()=>[])
+        const arr = Array.isArray(data) ? data : []
+        acc.push(...arr)
+        if (arr.length < pageLimit) break
+        offset += pageLimit
       }
-      const data = await res.json()
-      const batch = Array.isArray(data) ? data.map(r=>({ ...r, key: r.id })) : []
-      const hdr = res.headers ? res.headers.get('X-Total-Count') : null
-      const total = hdr ? Number(hdr) : batch.length
-      setTotalItems(Number.isFinite(total) ? total : batch.length)
-      setRows(batch)
+      const mapped = acc.map(r => ({ ...r, key: r.id }))
+      setAllRows(mapped)
     } finally {
       setLoading(false)
     }
@@ -113,7 +108,7 @@ export default function GaugeTracker() {
   }
 
   const columns = useMemo(() => [
-    { title: 'Sl. No.', key: 'slno', width: 70, render:(_, __, index)=> index + 1 },
+    { title: 'Sl. No.', key: 'slno', width: 70, align: 'center', render:(_, __, index)=> ((currentPage - 1) * pageSize) + index + 1 },
     { title: 'Equipment', dataIndex: 'name_of_the_equipment', key: 'name_of_the_equipment', width: 220, ellipsis: true },
     {
       title: 'Range',
@@ -244,10 +239,10 @@ export default function GaugeTracker() {
       )
       }
     },
-  ], [])
+  ], [currentPage, pageSize])
 
-  const filteredRows = useMemo(() => {
-    return rows.filter(r => {
+  const pageRows = useMemo(() => {
+    const out = allRows.filter(r => {
       const sOk = statusFilter ? String(r.status||'').toLowerCase() === String(statusFilter).toLowerCase() : true
       const dOk = Array.isArray(dateFilter) && dateFilter[0] && dateFilter[1]
         ? (() => {
@@ -262,7 +257,30 @@ export default function GaugeTracker() {
         : true
       return sOk && dOk
     })
-  }, [rows, statusFilter, dateFilter])
+    const getActionTime = (r) => {
+      const s = String(r.status||'').toLowerCase()
+      // Match what Actions column displays
+      if (s === 'returned') return r.returned_at
+      if (s === 'rejected') return r.accepted_at
+      if (s === 'accepted') return r.accepted_at
+      return r.requested_at
+    }
+    const toTs = (t) => {
+      try { return t ? new Date(t).getTime() : 0 } catch { return 0 }
+    }
+    // Sort newest first by the exact timestamp shown in Actions; tie-break by id desc
+    out.sort((a,b) => {
+      const tb = toTs(getActionTime(b)) - toTs(getActionTime(a))
+      if (tb !== 0) return tb
+      return (Number(b.id)||0) - (Number(a.id)||0)
+    })
+    // Update total items and slice for current page
+    const total = out.length
+    if (totalItems !== total) setTotalItems(total)
+    const start = (currentPage - 1) * pageSize
+    const end = start + pageSize
+    return out.slice(start, end)
+  }, [allRows, statusFilter, dateFilter, currentPage, pageSize, totalItems])
 
   const handlePageChange = (page, size) => {
     setCurrentPage(page)
@@ -314,15 +332,29 @@ export default function GaugeTracker() {
         return sOk && dOk
       })
       if (subset.length === 0) { message.info('No records to export'); return }
+      // Sort subset by the exact timestamp shown in Actions column (newest first)
+      const getActionTime = (r) => {
+        const s = String(r.status||'').toLowerCase()
+        if (s === 'returned') return r.returned_at
+        if (s === 'rejected') return r.accepted_at
+        if (s === 'accepted') return r.accepted_at
+        return r.requested_at
+      }
+      const toTs = (t) => { try { return t ? new Date(t).getTime() : 0 } catch { return 0 } }
+      subset.sort((a,b) => {
+        const tb = toTs(getActionTime(b)) - toTs(getActionTime(a))
+        if (tb !== 0) return tb
+        return (Number(b.id)||0) - (Number(a.id)||0)
+      })
       const doc = new jsPDF({ orientation: 'landscape' })
-      // Filter summary
+      // Filter summary (rendered below header on first page)
       const filters = []
       if (statusFilter) filters.push(`Status=${String(statusFilter).toUpperCase()}`)
       if (Array.isArray(dateFilter) && dateFilter[0] && dateFilter[1]) filters.push(`Date Range=${dateFilter[0].format('YYYY-MM-DD')}–${dateFilter[1].format('YYYY-MM-DD')}`)
       if (nameFilter && nameFilter.trim()) filters.push(`Name~"${nameFilter.trim()}"`)
       if (filters.length) {
         doc.setFontSize(9)
-        doc.text(`Filters: ${filters.join(', ')}`, 14, 22)
+        doc.text(`Filters: ${filters.join(', ')}`, 14, 24)
       }
       const head = [[
         'Equipment', 'Range', 'IDFN', 'Location', 'Make/Model', 'Requested By', 'Requested At', 'Status', 'Accepted By', 'Accepted At', 'Returned By', 'Returned At', 'Purpose', 'Return Condition'
@@ -343,8 +375,10 @@ export default function GaugeTracker() {
         String(r.purpose ?? ''),
         r.return_status ? (r.return_status === 'Custom' && r.return_remarks ? r.return_remarks : r.return_status) : (r.return_remarks || '')
       ])
-      doc.autoTable({ head, body, startY: filters.length ? 26 : 24, styles: { fontSize: 8 } })
-      makeHeaderFooter(doc, 'Gauge Tracker')
+      // Use header/footer hook to avoid overlapping content
+      const didDrawPage = buildAutoTablePageHook(doc, 'Gauge Tracker')
+      const topMargin = filters.length ? 36 : 28
+      doc.autoTable({ head, body, margin: { top: topMargin, bottom: 16, left: 14, right: 14 }, styles: { fontSize: 8 }, didDrawPage })
       const anyFilter = Boolean(statusFilter) || (Array.isArray(dateFilter) && dateFilter[0] && dateFilter[1]) || (nameFilter && nameFilter.trim())
       const fname = anyFilter ? `gauge-tracker_filtered_${formatNow()}.pdf` : `gauge-tracker_all_${formatNow()}.pdf`
       doc.save(fname)
@@ -457,7 +491,7 @@ export default function GaugeTracker() {
       <div className="table-container">
         <Table
           columns={columns}
-          dataSource={filteredRows}
+          dataSource={pageRows}
           loading={loading}
           pagination={false}
           bordered
@@ -465,12 +499,8 @@ export default function GaugeTracker() {
           className="ant-table-striped professional-table"
           rowClassName={(_, index) => (index % 2 === 0 ? 'table-row-light' : 'table-row-dark')}
           scroll={{ x: 1000 }}
-          onChange={(_, __, sorter) => {
-            const s = Array.isArray(sorter) ? sorter[0] : sorter
-            const field = s && s.field ? s.field : null
-            const order = s && s.order ? (s.order === 'descend' ? 'desc' : 'asc') : null
-            setSortBy(field)
-            setSortDir(order)
+          onChange={() => {
+            // Keep newest-first by last action; ignore header sort toggles
             setCurrentPage(1)
             fetchRows({ page: 0 })
           }}

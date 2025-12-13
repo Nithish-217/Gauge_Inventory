@@ -107,7 +107,6 @@ export default function EquipmentImportModal({ open, onClose }) {
             <p>Updated: {data.updated}</p>
             <p>Skipped: {data.skipped}</p>
             <p>Errors: {data.errors}</p>
-            <p>Audit ID: <code>{data.audit_id}</code></p>
           </div>
         ),
       })

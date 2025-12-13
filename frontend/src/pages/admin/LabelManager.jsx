@@ -17,6 +17,7 @@ export default function LabelManager() {
   const bcRef = useRef(null)
   const [suggestions, setSuggestions] = useState([])
   const [suggestLoading, setSuggestLoading] = useState(false)
+  const qDebounceRef = useRef(null)
 
   async function fetchEquipment(params = {}) {
     setLoading(true)
@@ -45,6 +46,15 @@ export default function LabelManager() {
   useEffect(() => {
     fetchEquipment({ current: currentPage, pageSize: pageSize })
   }, [currentPage, pageSize, sortBy, sortDir])
+
+  useEffect(() => {
+    if (qDebounceRef.current) clearTimeout(qDebounceRef.current)
+    qDebounceRef.current = setTimeout(() => {
+      setCurrentPage(1)
+      fetchEquipment({ current: 1, pageSize })
+    }, 300)
+    return () => { if (qDebounceRef.current) clearTimeout(qDebounceRef.current) }
+  }, [q])
 
   useEffect(() => {
     try { bcRef.current = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('equipment-events') : null } catch { bcRef.current = null }

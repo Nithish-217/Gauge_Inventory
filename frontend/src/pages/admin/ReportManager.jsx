@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import PdfJsViewer from '../../components/PdfViewer/PdfJsViewer'
 import '../../components/PdfViewer/pdf-viewer.css'
 import { Table, Button, Space, Input, DatePicker, InputNumber, Upload, message, Typography, Tag, Modal, Form, Pagination, AutoComplete, List, Divider, Popconfirm, Tabs, Spin } from 'antd'
-import { ReloadOutlined, UploadOutlined, DownloadOutlined, EyeOutlined } from '@ant-design/icons'
+import { ReloadOutlined, UploadOutlined, DownloadOutlined, EyeOutlined, FolderOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 
 export default function ReportManager() {
@@ -12,14 +12,18 @@ export default function ReportManager() {
   const [modalOpen, setModalOpen] = useState(false)
   const [activeRow, setActiveRow] = useState(null)
   const [form] = Form.useForm()
+  const folderWatch = Form.useWatch ? Form.useWatch('folder', form) : undefined
   const [selectedFiles, setSelectedFiles] = useState([])
   const [reportTitle, setReportTitle] = useState('')
   const [reportNotes, setReportNotes] = useState('')
+  const [titleOptions, setTitleOptions] = useState([])
   const [currentPage, setCurrentPage] = useState(1)
   const [totalItems, setTotalItems] = useState(0)
   const [pageSize, setPageSize] = useState(10)
-  const [sortBy, setSortBy] = useState(null)
-  const [sortDir, setSortDir] = useState(null)
+  const [sortBy, setSortBy] = useState('name_of_the_equipment')
+  const [sortDir, setSortDir] = useState('asc')
+  // When opened from a folder in Files modal, store that folder to hide the folder input
+  const [uploadPrefilledFolder, setUploadPrefilledFolder] = useState('')
   const [pdfViewerOpen, setPdfViewerOpen] = useState(false)
   const [pdfViewerUrl, setPdfViewerUrl] = useState(null)
   const [pdfViewerTitle, setPdfViewerTitle] = useState('')
@@ -31,8 +35,33 @@ export default function ReportManager() {
   const [viewerGauge, setViewerGauge] = useState(null)
   const [viewerData, setViewerData] = useState({ reports: [] })
   const [viewerLoading, setViewerLoading] = useState(false)
+  const [viewerTitle, setViewerTitle] = useState('')
   const scrollRef = useRef(null)
   const bcRef = useRef(null)
+  const normalizeFolderName = (s) => {
+    try {
+      const v = String(s||'').trim().toLowerCase()
+        .replace(/\s+/g, '_')
+        .replace(/[^a-z0-9-_]/g, '_')
+        .replace(/_+/g, '_')
+      return v || 'untitled'
+    } catch { return 'untitled' }
+  }
+
+  // Open upload modal prefilled with a folder name from Files modal
+  const openUploadForFolder = (folderName) => {
+    if (!filesModalGauge) return
+    try {
+      setActiveRow(filesModalGauge)
+      setSelectedFiles([])
+      setReportTitle(folderName || '')
+      setUploadPrefilledFolder(folderName || '')
+      setModalOpen(true)
+      // Prefill form field for validation UI (after modal mounts as well)
+      try { form.setFieldsValue({ folder: folderName || '' }) } catch {}
+      setTimeout(() => { try { form.setFieldsValue({ folder: folderName || '' }) } catch {} }, 0)
+    } catch {}
+  }
       // Open files modal and load files for a gauge
   const openFilesModal = async (row) => {
     setFilesModalGauge(row)
@@ -55,7 +84,31 @@ export default function ReportManager() {
           }
         }
       }
-      setFilesModalData(all)
+      // Group by folder name (report.title), normalized
+      const groupMap = new Map()
+      for (const entry of all) {
+        const folder = normalizeFolderName((entry.report?.title || `report_${entry.report?.id}`))
+        if (!groupMap.has(folder)) groupMap.set(folder, [])
+        for (const f of entry.files) {
+          groupMap.get(folder).push({ reportId: entry.report.id, file: f })
+        }
+      }
+      const grouped = Array.from(groupMap.entries()).map(([folder, items]) => {
+        // Sort files inside a folder by original_name then uploaded_at
+        const sorted = [...items].sort((a,b) => {
+          const an = (a.file?.original_name||'').toLowerCase()
+          const bn = (b.file?.original_name||'').toLowerCase()
+          const byName = an.localeCompare(bn)
+          if (byName !== 0) return byName
+          const ad = new Date(a.file?.uploaded_at||0).getTime()||0
+          const bd = new Date(b.file?.uploaded_at||0).getTime()||0
+          return ad - bd
+        })
+        return ({ folder, items: sorted })
+      })
+      // Sort folders alphabetically
+      grouped.sort((a,b) => String(a.folder).localeCompare(String(b.folder)))
+      setFilesModalData(grouped)
     } catch {
       message.error('Failed to load files')
       setFilesModalData([])
@@ -69,6 +122,7 @@ export default function ReportManager() {
     setViewerGauge(row)
     setViewerOpen(true)
     setViewerLoading(true)
+    setViewerTitle('')
     try {
       const reps = await fetch(`/gauges/${row.gauge_id}/reports`)
       let reports = []
@@ -90,14 +144,33 @@ export default function ReportManager() {
       if (totalFiles <= 1) {
         const single = all.find(it => (it.files||[]).length)
         setViewerData({ reports: single ? [{ report: { id: (single.report?.id), title: `Report for ${row.gauge_id}` }, files: single.files }] : [] })
+        try { const f = single && Array.isArray(single.files) ? (single.files[0] || null) : null; if (f) setViewerTitle(f.original_name || '') } catch {}
       } else {
         setViewerData({ reports: all })
+        try {
+          const firstEntry = all[0]
+          const f = firstEntry && Array.isArray(firstEntry.files) ? (firstEntry.files[0] || null) : null
+          setViewerTitle((f && f.original_name) || (firstEntry?.report?.title) || '')
+        } catch {}
       }
     } catch {
       setViewerData({ reports: [] })
     } finally {
       setViewerLoading(false)
     }
+  }
+
+  // Open viewer focused on a single file from the Files modal
+  const openFileInViewer = (gauge_id, reportEntry, file) => {
+    try {
+      setViewerGauge({ gauge_id, name_of_the_equipment: filesModalGauge?.name_of_the_equipment })
+    } catch {
+      setViewerGauge({ gauge_id })
+    }
+    setViewerData({ reports: [{ report: { id: reportEntry.id, title: reportEntry.title }, files: [file] }] })
+    setViewerOpen(true)
+    setViewerLoading(false)
+    try { setViewerTitle(file?.original_name || '') } catch {}
   }
 
   // Delete a file from a report
@@ -113,6 +186,17 @@ export default function ReportManager() {
   }
   const [suggestions, setSuggestions] = useState([])
   const [suggestLoading, setSuggestLoading] = useState(false)
+  const qDebounceRef = useRef(null)
+
+  // Debounced dynamic fetch on query change (top-level)
+  useEffect(() => {
+    if (qDebounceRef.current) clearTimeout(qDebounceRef.current)
+    qDebounceRef.current = setTimeout(() => {
+      setCurrentPage(1)
+      fetchRows({ page: 0, reset: true })
+    }, 300)
+    return () => { if (qDebounceRef.current) clearTimeout(qDebounceRef.current) }
+  }, [q])
 
   // Ensure form fields are prefilled when modal opens
   useEffect(() => {
@@ -124,6 +208,8 @@ export default function ReportManager() {
       form.setFieldsValue({
         last: activeRow.date_of_last_calibration ? dayjs(activeRow.date_of_last_calibration) : null,
         freq: isNaN(freqVal) ? undefined : freqVal,
+        // also set folder here so reset doesn't clear prefill
+        folder: (uploadPrefilledFolder || reportTitle || '')
       })
       // If frequency could not be derived, fetch it from server
       if (freqVal == null || isNaN(freqVal)) {
@@ -151,6 +237,31 @@ export default function ReportManager() {
         })()
       }
     }
+  }, [modalOpen, activeRow])
+
+  // Sync folder field with selected folder name (prefill when opening from Files modal)
+  useEffect(() => {
+    if (modalOpen) {
+      try { form.setFieldsValue({ folder: (uploadPrefilledFolder || reportTitle || '') }) } catch {}
+    }
+  }, [modalOpen, reportTitle, uploadPrefilledFolder])
+
+  // Load existing titles for this gauge to allow selecting an existing folder name
+  useEffect(() => {
+    let cancelled = false
+    const loadTitles = async () => {
+      if (!modalOpen || !activeRow?.gauge_id) { setTitleOptions([]); return }
+      try {
+        const res = await fetch(`/gauges/${activeRow.gauge_id}/reports`)
+        const arr = res.ok ? await res.json().catch(()=>[]) : []
+        const titles = Array.isArray(arr) ? Array.from(new Set(arr.map(it => (it.title || '').trim()).filter(Boolean))) : []
+        if (!cancelled) setTitleOptions(titles.map(t => ({ value: t })))
+      } catch {
+        if (!cancelled) setTitleOptions([])
+      }
+    }
+    loadTitles()
+    return () => { cancelled = true }
   }, [modalOpen, activeRow])
 
   const fetchRows = async (opts = {}) => {
@@ -260,7 +371,7 @@ export default function ReportManager() {
       if (!Array.isArray(state.files) || state.files.length === 0) { message.warning('Select at least one file'); return }
       if (!state.last || !state.freq) { message.warning('Provide last calibration date and frequency'); return }
       const fd = new FormData()
-      fd.append('title', (reportTitle || `Report for ${row.gauge_id}`))
+      fd.append('title', (state.folder || reportTitle || `Report for ${row.gauge_id}`))
       fd.append('notes', (reportNotes || ''))
       // Optional equipment fields (keeps legacy behavior)
       fd.append('last_calibration_date', dayjs(state.last).format('YYYY-MM-DD'))
@@ -300,11 +411,10 @@ export default function ReportManager() {
   const columns = useMemo(() => [
     { 
       title: 'Sl. No.', 
-      dataIndex: 'gauge_id', 
-      key: 'gauge_id', 
-      width: 100, 
+      key: 'sl_no', 
+      width: 90, 
       align: 'center',
-      sorter: (a,b) => a.gauge_id - b.gauge_id
+      render: (_val, _row, index) => ((currentPage - 1) * pageSize) + index + 1,
     },
     { 
       title: 'Equipment', 
@@ -312,7 +422,9 @@ export default function ReportManager() {
       key: 'name', 
       ellipsis: true,
       width: 200,
-      sorter: (a,b) => String(a.name_of_the_equipment||'').localeCompare(String(b.name_of_the_equipment||''))
+      sorter: (a,b) => String(a.name_of_the_equipment||'').localeCompare(String(b.name_of_the_equipment||'')),
+      defaultSortOrder: 'ascend',
+      sortDirections: ['ascend', 'descend']
     },
     { 
       title: 'IDFN', 
@@ -362,6 +474,14 @@ export default function ReportManager() {
       render:(v)=> v ? new Date(v).toLocaleString() : '' 
     },
     { 
+      title: 'Gauge ID', 
+      dataIndex: 'gauge_id', 
+      key: 'gauge_id', 
+      width: 110, 
+      align: 'center',
+      sorter: (a,b) => (a.gauge_id || 0) - (b.gauge_id || 0)
+    },
+    { 
       title: 'Report', 
       dataIndex: 'object_key', 
       key: 'report', 
@@ -376,52 +496,12 @@ export default function ReportManager() {
           >Files</Button>
           <Button 
             type="text" 
-            icon={<EyeOutlined />} 
-            onClick={()=> openViewer(row)}
-            title="View"
-            style={{ color: '#1890ff' }}
-          />
-          <Button 
-            type="text" 
             icon={<DownloadOutlined />} 
             onClick={()=> window.open(`/gauges/${row.gauge_id}/reports/zip`, '_self')}
             title="Download ZIP"
             style={{ color: '#52c41a' }}
           />
         </Space>
-      )
-    },
-    { 
-      title: 'Upload', 
-      key: 'upload', 
-      fixed: 'right', 
-      align: 'center', 
-      width: 120, 
-      render:(_,row)=> (
-        <Button 
-          type="text" 
-          icon={<UploadOutlined />} 
-          onClick={() => {
-            setActiveRow(row)
-            setSelectedFiles([])
-            setModalOpen(true)
-            const freqVal = (row.calibration_freq_months !== undefined && row.calibration_freq_months !== null)
-              ? Number(row.calibration_freq_months)
-              : (row.freq !== undefined && row.freq !== null ? Number(row.freq) : undefined)
-            setTimeout(() => {
-              try {
-                form.setFieldsValue({
-                  last: row.date_of_last_calibration ? dayjs(row.date_of_last_calibration) : null,
-                  freq: isNaN(freqVal) ? undefined : freqVal,
-                })
-              } catch {}
-            }, 0)
-          }}
-          title="Upload Report"
-          style={{ color: '#722ed1' }}
-        >
-          Upload
-        </Button>
       )
     },
   ], [])
@@ -447,6 +527,7 @@ export default function ReportManager() {
                 allowClear
                 loading={suggestLoading}
                 placeholder="Search by name, IDFN, or location"
+                onChange={(e)=> setQ(e.target.value)}
                 onSearch={()=>{ setCurrentPage(1); fetchRows({ page:0, reset: true }) }}
                 enterButton
               />
@@ -504,11 +585,14 @@ export default function ReportManager() {
         key={activeRow ? `upload-${activeRow.gauge_id}` : 'upload-none'}
         title={activeRow ? `Upload calibration report - ${activeRow.name_of_the_equipment || ''}` : 'Upload calibration report'}
         open={modalOpen}
-        onCancel={() => { setModalOpen(false); setActiveRow(null); setSelectedFiles([]); try { form.resetFields() } catch {} }}
+        onCancel={() => { setModalOpen(false); setActiveRow(null); setSelectedFiles([]); setUploadPrefilledFolder(''); try { form.resetFields() } catch {} }}
         onOk={async () => {
           try {
             const values = await form.validateFields()
-            const state = { last: values.last, freq: values.freq, files: selectedFiles }
+            // decide folder: when prefilled from Files modal use that, otherwise use form entry
+            const folderVal = (uploadPrefilledFolder || values.folder || '')
+            try { setReportTitle(folderVal) } catch {}
+            const state = { last: values.last, freq: values.freq, files: selectedFiles, folder: folderVal }
             await onUpload(activeRow, state)
           } catch {}
         }}
@@ -530,12 +614,27 @@ export default function ReportManager() {
             })()
           }}
         >
-          <Form.Item label="Title">
-            <Input placeholder={`Report for ${activeRow?.gauge_id || ''}`} value={reportTitle} onChange={(e)=>setReportTitle(e.target.value)} />
-          </Form.Item>
-          <Form.Item label="Notes">
+          {!uploadPrefilledFolder && (
+            <Form.Item 
+              label="Folder" 
+              name="folder"
+              rules={[{ required: true, message: 'Please enter folder name' }]}
+              required
+            >
+              <AutoComplete
+                options={titleOptions}
+                value={folderWatch}
+                onChange={(val)=> { setReportTitle(val); try { form.setFieldsValue({ folder: val || '' }) } catch {} }}
+                placeholder={`Folder name`}
+                style={{ width: '100%' }}
+                allowClear
+                filterOption={(input, option) => (option?.value || '').toLowerCase().includes((input||'').toLowerCase())}
+              />
+            </Form.Item>
+          )}
+          {/* <Form.Item label="Notes">
             <Input.TextArea rows={3} placeholder="Optional notes" value={reportNotes} onChange={(e)=>setReportNotes(e.target.value)} />
-          </Form.Item>
+          </Form.Item> */}
           <Form.Item label="Report files" required>
             <Upload.Dragger
               beforeUpload={(file)=>{ setSelectedFiles(prev=>[...prev, file]); return false }}
@@ -599,35 +698,63 @@ export default function ReportManager() {
           <div>Loading...</div>
         ) : (
           filesModalData.length === 0 ? (
-            <div>No files found for this gauge</div>
+            <div>
+              <div>No files found for this gauge</div>
+              <Divider />
+              <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+                <Button type="dashed" icon={<UploadOutlined />} onClick={() => openUploadForFolder('')}>
+                  Create new folder
+                </Button>
+              </div>
+            </div>
           ) : (
             <div>
-              {filesModalData.map(({ report, files }) => (
-                <div key={`report-${report.id}`} style={{ marginBottom: 16 }}>
-                  <Divider orientation="left">{report.title || `Report ${report.id}`} <span style={{ marginLeft: 8, color:'#888' }}>{report.created_at ? new Date(report.created_at).toLocaleString() : ''}</span></Divider>
+              {filesModalData.map((group) => (
+                <div key={`folder-${group.folder}`} style={{ marginBottom: 16 }}>
+                  <div style={{ display:'flex', alignItems:'center', gap: 12, padding: '4px 0' }}>
+                    <span style={{ display:'flex', alignItems:'center', fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <FolderOutlined style={{ color: '#faad14', marginRight: 8 }} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.folder}</span>
+                    </span>
+                    <Button
+                      size="small"
+                      type="primary"
+                      onClick={()=> openUploadForFolder(group.folder)}
+                      style={{ marginLeft: 'auto', width: 'auto', whiteSpace: 'nowrap', padding: '0 10px' }}
+                    >
+                      Upload
+                    </Button>
+                  </div>
+                  <Divider style={{ margin: '8px 0' }} />
                   <List
                     size="small"
-                    dataSource={files}
+                    dataSource={group.items}
                     bordered
-                    renderItem={(f) => (
+                    renderItem={(it) => (
                       <List.Item
                         actions={[
-                          <a key="open" href={f.url} target="_blank" rel="noreferrer">Open</a>,
-                          <a key="stream" href={`/gauges/${filesModalGauge.gauge_id}/reports/${report.id}/files/${f.id}/stream?download=1`}>Download</a>,
-                          <Popconfirm key="del" title="Delete this file?" onConfirm={() => deleteFile(filesModalGauge.gauge_id, report.id, f.id)}>
+                          <a key="open" href="#" onClick={(e)=>{ e.preventDefault(); openFileInViewer(filesModalGauge.gauge_id, { id: it.reportId, title: group.folder }, it.file) }}>Open</a>,
+                          <a key="stream" href={`/gauges/${filesModalGauge.gauge_id}/reports/${it.reportId}/files/${it.file.id}/stream?download=1`}>Download</a>,
+                          <Popconfirm key="del" title="Delete this file?" onConfirm={() => deleteFile(filesModalGauge.gauge_id, it.reportId, it.file.id)}>
                             <a style={{ color:'#ff4d4f' }}>Delete</a>
                           </Popconfirm>
                         ]}
                       >
                         <List.Item.Meta
-                          title={f.original_name || f.content_type || 'file'}
-                          description={`${(f.size_bytes||0)} bytes • ${f.content_type || ''} • ${f.uploaded_at || ''}`}
+                          title={it.file.original_name || it.file.content_type || 'file'}
+                          description={`${(it.file.size_bytes||0)} bytes • ${it.file.content_type || ''} • ${it.file.uploaded_at || ''}`}
                         />
                       </List.Item>
                     )}
                   />
                 </div>
               ))}
+              <Divider />
+              <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+                <Button type="dashed" icon={<UploadOutlined />} onClick={() => openUploadForFolder('')}>
+                  Create new folder
+                </Button>
+              </div>
             </div>
           )
         )}
@@ -635,9 +762,9 @@ export default function ReportManager() {
 
       {/* PDF.js Modal viewer */}
       <Modal
-        title={viewerGauge ? `Reports - ${viewerGauge.name_of_the_equipment || ''} (Gauge ${viewerGauge.gauge_id})` : 'Reports'}
+        title={viewerTitle || (viewerGauge ? `Reports - ${viewerGauge.name_of_the_equipment || ''} (Gauge ${viewerGauge.gauge_id})` : 'Reports')}
         open={viewerOpen}
-        onCancel={() => { setViewerOpen(false); setViewerGauge(null); setViewerData({ reports: [] }) }}
+        onCancel={() => { setViewerOpen(false); setViewerGauge(null); setViewerData({ reports: [] }); setViewerTitle('') }}
         footer={null}
         width="90%"
         style={{ top: 20, padding: 0 }}
@@ -689,6 +816,12 @@ export default function ReportManager() {
                       <Tabs
                         style={{ flex:1, minHeight:0, display:'flex', flexDirection:'column', height:'100%' }}
                         tabBarStyle={{ marginBottom: 8 }}
+                        onChange={(activeKey) => {
+                          try {
+                            const f = files.find(ff => String(ff.id ?? '') === String(activeKey) || String(files.indexOf(ff)) === String(activeKey))
+                            if (f) setViewerTitle(f.original_name || '')
+                          } catch {}
+                        }}
                         items={files.map((file, idx) => ({
                           key: String(file.id || idx),
                           label: file.original_name || `File ${idx+1}`,
@@ -716,9 +849,29 @@ export default function ReportManager() {
                   <Tabs
                     style={{ flex:1, minHeight:0, display:'flex', flexDirection:'column', height:'100%' }}
                     tabBarStyle={{ marginBottom: 8 }}
+                    onChange={(activeKey) => {
+                      try {
+                        const sel = items.find(en => String(en.report.id || '') === String(activeKey))
+                        if (sel) {
+                          const fs = Array.isArray(sel.files) ? sel.files : []
+                          const ext = (name='') => String(name).toLowerCase().split('.').pop()
+                          const isPdf = (f) => (f?.content_type||'').startsWith('application/pdf') || ['pdf'].includes(ext(f?.original_name||''))
+                          const isImg = (f) => (f?.content_type||'').startsWith('image/') || ['png','jpg','jpeg','gif','webp','bmp'].includes(ext(f?.original_name||''))
+                          const first = fs.find(isPdf) || fs.find(isImg) || fs[0] || null
+                          setViewerTitle((first && first.original_name) || (sel.report?.title) || '')
+                        }
+                      } catch {}
+                    }}
                     items={items.map((entry, idx) => ({
                       key: String(entry.report.id || idx),
-                      label: entry.report.title || `Report ${entry.report.id}`,
+                      label: (() => {
+                        const files = Array.isArray(entry.files) ? entry.files : []
+                        const ext = (name='') => String(name).toLowerCase().split('.').pop()
+                        const isPdf = (f) => (f?.content_type||'').startsWith('application/pdf') || ['pdf'].includes(ext(f?.original_name||''))
+                        const isImg = (f) => (f?.content_type||'').startsWith('image/') || ['png','jpg','jpeg','gif','webp','bmp'].includes(ext(f?.original_name||''))
+                        const first = files.find(isPdf) || files.find(isImg) || files[0] || null
+                        return (first?.original_name) || (entry.report.title) || `Report ${entry.report.id}`
+                      })(),
                       children: (
                         <div style={{ flex:1, minHeight:0, display:'flex', flexDirection:'column', height:'100%' }}>
                           {(() => {

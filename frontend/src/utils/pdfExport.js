@@ -58,6 +58,70 @@ export function makeHeaderFooter(doc, title) {
   }
 }
 
+// Lightweight loader for html2canvas via CDN
+let html2canvasPromise = null
+export async function loadHtml2Canvas() {
+  if (window.html2canvas && typeof window.html2canvas === 'function') return window.html2canvas
+  if (!html2canvasPromise) {
+    html2canvasPromise = new Promise((resolve, reject) => {
+      const s = document.createElement('script')
+      s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js'
+      s.async = true
+      s.onload = () => resolve(window.html2canvas)
+      s.onerror = () => reject(new Error('Failed to load html2canvas'))
+      document.head.appendChild(s)
+    })
+  }
+  return html2canvasPromise
+}
+
+// Export a DOM element to a paginated PDF (A4 portrait)
+export async function exportElementToPDF(element, fileName, title = 'Analytics') {
+  const jsPDF = await loadJsPDF()
+  const html2canvas = await loadHtml2Canvas()
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' })
+
+  const a4Width = doc.internal.pageSize.getWidth()
+  const a4Height = doc.internal.pageSize.getHeight()
+
+  // Render at higher scale for clarity
+  const canvas = await html2canvas(element, { scale: 2, useCORS: true, backgroundColor: '#ffffff' })
+  const imgData = canvas.toDataURL('image/png')
+  const imgWidth = a4Width - 40 // margins
+  const imgHeight = (canvas.height * imgWidth) / canvas.width
+
+  let y = 40
+  let remainingHeight = imgHeight
+  let srcY = 0
+  const pageMarginBottom = 30
+
+  // Draw header on each page
+  const drawHeader = () => {
+    doc.setFontSize(12)
+    doc.text(String(title || ''), 20, 24)
+    doc.setFontSize(8)
+    doc.text(`Exported: ${new Date().toLocaleString()}`, 20, 34)
+  }
+
+  // We will slice the tall canvas into page segments by drawing with different y positions
+  while (remainingHeight > 0) {
+    drawHeader()
+    const available = a4Height - y - pageMarginBottom
+    const h = Math.min(remainingHeight, available)
+
+    // Add the image segment
+    doc.addImage(imgData, 'PNG', 20, y, imgWidth, (h))
+
+    remainingHeight -= available
+    if (remainingHeight > 0) {
+      doc.addPage()
+      y = 40
+    }
+  }
+
+  doc.save(fileName || `export_${formatNow()}.pdf`)
+}
+
 // Preferred: use this hook with jsPDF autoTable to draw header/footer on every page
 // without overlapping table content. Also set margin.top/bottom in autoTable options.
 export function buildAutoTablePageHook(doc, title) {

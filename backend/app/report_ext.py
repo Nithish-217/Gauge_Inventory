@@ -174,7 +174,7 @@ def download_reports_zip(gauge_id: int, db: Session = Depends(get_db)):
     ensure_reports_new_tables(db)
     rows = db.execute(text(
         """
-        SELECT rf.object_key, rf.original_name, r.id AS report_id
+        SELECT rf.object_key, rf.original_name, r.id AS report_id, r.title AS report_title
         FROM public.report_files rf
         JOIN public.reports r ON r.id = rf.report_id
         WHERE r.gauge_id = :gid
@@ -190,17 +190,31 @@ def download_reports_zip(gauge_id: int, db: Session = Depends(get_db)):
     mem = _io.BytesIO()
     with zipfile.ZipFile(mem, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for r in rows:
-            key = r.get("object_key")
+            key = r.get("object_key") or ""
             name = r.get("original_name") or os.path.basename(key or "file")
-            arcname = f"report_{r.get('report_id')}/{name}"
+            # Use the original report title as folder name (exact as user created), with safe sanitization
+            folder_raw = (r.get("report_title") or f"report_{r.get('report_id')}")
+            folder = str(folder_raw).replace("\\", "/").strip().strip("/")
+            # Prevent traversal and empty names
+            while folder.startswith("../"):
+                folder = folder[3:]
+            if not folder:
+                folder = f"report_{r.get('report_id')}"
+            arcname = f"{folder}/{name}"
+            # Security: prevent path traversal inside zip
+            if arcname.startswith("/"):
+                arcname = arcname.lstrip("/")
+
             data = b""
             try:
                 obj = client.get_object(bucket, key)
                 try:
                     data = obj.read()
                 finally:
-                    try: obj.close()
-                    except Exception: pass
+                    try:
+                        obj.close()
+                    except Exception:
+                        pass
             except Exception:
                 data = b""
             zf.writestr(arcname, data)

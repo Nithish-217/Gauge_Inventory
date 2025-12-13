@@ -132,8 +132,11 @@ export default function EmailConfig() {
     }
   }
 
-  // Load current offset once
-  useEffect(() => { getOffset() }, [])
+  // Load current offset and schedule time once on mount
+  useEffect(() => {
+    getOffset();
+    getSchedule();
+  }, [])
 
   const rows = useMemo(() => logs.map((r) => ({
     id: r.id,
@@ -204,7 +207,6 @@ export default function EmailConfig() {
           <div style={{fontWeight:600}}>Schedule Time</div>
           <input style={{width:110}} placeholder="HH:MM" value={schedTime} onChange={e=>setSchedTime(e.target.value)} />
           <button type="button" onClick={setSchedule}>Update</button>
-          <button type="button" onClick={getSchedule}>Get Current</button>
           <button type="button" onClick={runNow}>Run Now</button>
           {schedTz ? <span style={{opacity:0.7}}>TZ: {schedTz}</span> : null}
           {schedMsg ? <span style={{marginLeft:8,color:'#1677ff'}}>{schedMsg}</span> : null}
@@ -215,7 +217,6 @@ export default function EmailConfig() {
           <div style={{fontWeight:600}}>Days Before Due</div>
           <input type="number" min={0} style={{width:110}} placeholder="0" value={offsetDays} onChange={e=>setOffsetDays(e.target.value)} />
           <button type="button" onClick={setOffset}>Update</button>
-          <button type="button" onClick={getOffset}>Get Current</button>
           {offsetMsg ? <span style={{marginLeft:8,color:'#1677ff'}}>{offsetMsg}</span> : null}
         </div>
       </div>
