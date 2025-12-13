@@ -15,6 +15,8 @@ export default function CalibrationReport() {
   const [filesModalGauge, setFilesModalGauge] = useState(null)
   const [filesModalData, setFilesModalData] = useState([])
   const [filesLoading, setFilesLoading] = useState(false)
+  const [hasFilesMap, setHasFilesMap] = useState({})
+  const [hasFilesLoading, setHasFilesLoading] = useState(false)
   const scrollRef = useRef(null)
   const username = (()=>{ try { return localStorage.getItem('username') || '' } catch { return '' } })()
   const qDebounceRef = useRef(null)
@@ -47,6 +49,11 @@ export default function CalibrationReport() {
       setHasMore(items.length === limit) // pagination based on raw fetch length
       if (cur === 0 || opts.reset) setRows(batch)
       else setRows(prev => [...prev, ...batch])
+      // Prefetch has-files flags for currently loaded gauges
+      try {
+        const ids = (cur === 0 || opts.reset) ? batch.map(r=>r.gauge_id) : [...new Set([...(rows||[]).map(r=>r.gauge_id), ...batch.map(r=>r.gauge_id)])]
+        await prefetchHasFiles(ids)
+      } catch {}
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Failed to load')
     } finally {
@@ -123,6 +130,25 @@ export default function CalibrationReport() {
     setPdfViewerOpen(true)
   }
 
+  const prefetchHasFiles = async (gaugeIds=[]) => {
+    const unique = Array.from(new Set((Array.isArray(gaugeIds)?gaugeIds:[]).filter(Boolean)))
+    if (!unique.length) return
+    setHasFilesLoading(true)
+    try {
+      const updates = {}
+      await Promise.all(unique.map(async (gid) => {
+        try {
+          const res = await fetch(`/gauges/${gid}/reports`)
+          const arr = res.ok ? await res.json().catch(()=>[]) : []
+          updates[gid] = Array.isArray(arr) && arr.length > 0
+        } catch { updates[gid] = false }
+      }))
+      setHasFilesMap(prev => ({ ...prev, ...updates }))
+    } finally {
+      setHasFilesLoading(false)
+    }
+  }
+
   useEffect(() => { fetchRows({ page: 0 }) }, [username])
 
   // Debounced query: refresh results as the user types, preserve infinite scroll logic
@@ -158,12 +184,19 @@ export default function CalibrationReport() {
     { title: 'Last Calibration', dataIndex: 'date_of_last_calibration', key: 'last', width: 160, render:(v)=> v ? new Date(v).toLocaleDateString() : '' },
     { title: 'Freq (months)', dataIndex: 'calibration_freq_months', key: 'freq', width: 130 },
     { title: 'Due', dataIndex: 'calibration_due', key: 'due', width: 160, render:(v)=> v ? new Date(v).toLocaleDateString() : '' },
-    { title: 'Report', dataIndex: 'object_key', key: 'report', width: 240, fixed: 'right', align:'right', render:(_,row)=> (
-      <Space>
-        <Button type="text" onClick={()=> openFilesModal(row)}>Files</Button>
-        <Button type="text" icon={<DownloadOutlined />} onClick={()=> window.open(`/gauges/${row.gauge_id}/reports/zip`, '_self')} title="Download ZIP" style={{ color: '#52c41a' }} />
-      </Space>
-    )},
+    { title: 'Report', dataIndex: 'object_key', key: 'report', width: 260, fixed: 'right', align:'right', render:(_,row)=> {
+      const val = hasFilesMap[row.gauge_id]
+      if (typeof val === 'undefined') {
+        return hasFilesLoading ? <span style={{ color:'#999' }}>Checking…</span> : <span style={{ color:'#999' }}>No reports uploaded yet</span>
+      }
+      if (val === false) return <span style={{ color:'#999' }}>No reports uploaded yet</span>
+      return (
+        <Space>
+          <Button type="text" onClick={()=> openFilesModal(row)}>Files</Button>
+          <Button type="text" icon={<DownloadOutlined />} onClick={()=> window.open(`/gauges/${row.gauge_id}/reports/zip`, '_self')} title="Download ZIP" style={{ color: '#52c41a' }} />
+        </Space>
+      )
+    }},
   ], [])
 
   return (

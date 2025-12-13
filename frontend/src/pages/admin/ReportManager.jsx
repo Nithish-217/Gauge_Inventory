@@ -48,6 +48,21 @@ export default function ReportManager() {
     } catch { return 'untitled' }
   }
 
+  const hasAnyFilesForGauge = async (gauge_id) => {
+    try {
+      const reps = await fetch(`/gauges/${gauge_id}/reports`)
+      const arr = reps.ok ? await reps.json().catch(()=>[]) : []
+      const reports = Array.isArray(arr) ? arr : []
+      for (const r of reports) {
+        const fr = await fetch(`/gauges/${gauge_id}/reports/${r.id}/files`)
+        if (!fr.ok) continue
+        const files = await fr.json().catch(()=>[])
+        if (Array.isArray(files) && files.length) return true
+      }
+      return false
+    } catch { return false }
+  }
+
   // Open upload modal prefilled with a folder name from Files modal
   const openUploadForFolder = (folderName) => {
     if (!filesModalGauge) return
@@ -497,7 +512,7 @@ export default function ReportManager() {
           <Button 
             type="text" 
             icon={<DownloadOutlined />} 
-            onClick={()=> window.open(`/gauges/${row.gauge_id}/reports/zip`, '_self')}
+            onClick={async ()=> { const ok = await hasAnyFilesForGauge(row.gauge_id); if (!ok) { message.info('No files to download'); return } window.open(`/gauges/${row.gauge_id}/reports/zip`, '_self') }}
             title="Download ZIP"
             style={{ color: '#52c41a' }}
           />
