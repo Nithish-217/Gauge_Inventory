@@ -280,9 +280,11 @@ def update_user(user_id: int, payload: schemas.UpdateUserRequest, db: Session = 
     update_fields = []
     params = {"user_id": user_id}
     
+    # Username is immutable: reject attempts to change it
     if payload.username is not None:
-        update_fields.append("username = :username")
-        params["username"] = payload.username.strip()
+        new_un = payload.username.strip()
+        if new_un and new_un != (user.username or ""):
+            raise HTTPException(status_code=400, detail="Username cannot be changed")
     
     if payload.email is not None:
         update_fields.append("email = :email")

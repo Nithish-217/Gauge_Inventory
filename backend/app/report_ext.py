@@ -92,7 +92,7 @@ def stream_report_file(gauge_id: int, report_id: int, file_id: int, download: in
     ), {"fid": file_id, "rid": report_id, "gid": gauge_id}).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="File not found")
-    bucket = os.getenv("MINIO_BUCKET", "report-files")
+    bucket = os.getenv("MINIO_BUCKET", "reports")
     client = _minio_client_from_env()
     key = row["object_key"]
     # Probe object for metadata/size to help clients like PDF.js
@@ -150,7 +150,7 @@ def delete_report(gauge_id: int, report_id: int, db: Session = Depends(get_db)):
     rpt = db.execute(text("SELECT id FROM public.reports WHERE id = :rid AND gauge_id = :gid"), {"rid": report_id, "gid": gauge_id}).mappings().first()
     if not rpt:
         raise HTTPException(status_code=404, detail="Report not found")
-    bucket = os.getenv("MINIO_BUCKET", "report-files")
+    bucket = os.getenv("MINIO_BUCKET", "reports")
     prefix = f"gauges/{gauge_id}/reports/{report_id}/"
     try:
         client = _minio_client_from_env()
@@ -186,7 +186,7 @@ def download_reports_zip(gauge_id: int, db: Session = Depends(get_db)):
     import io as _io
     import zipfile
     client = _minio_client_from_env()
-    bucket = os.getenv("MINIO_BUCKET", "report-files")
+    bucket = os.getenv("MINIO_BUCKET", "reports")
     mem = _io.BytesIO()
     with zipfile.ZipFile(mem, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for r in rows:

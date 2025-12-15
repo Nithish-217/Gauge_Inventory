@@ -119,14 +119,14 @@ export default function CreateUser() {
   const onSubmitEdit = async (e) => {
     e.preventDefault()
     setEditError('')
-    if (!editForm.username || !editForm.email || !editForm.role) {
-      setEditError('Username, Email, and Role are required.')
+    if (!editForm.email || !editForm.role) {
+      setEditError('Email and Role are required.')
       return
     }
     try {
       setEditLoading(true)
+      // Do not allow username edits; exclude username from payload
       const payload = {
-        username: editForm.username.trim(),
         email: editForm.email.trim(),
         role: editForm.role,
         employee_id: editForm.employee_id?.trim() || null
@@ -454,17 +454,6 @@ export default function CreateUser() {
       >
         <form onSubmit={onSubmitEdit}>
           <div className="form-grid">
-            <div className="form-field">
-              <label className="form-label required">Username</label>
-              <input
-                className="form-input"
-                id="edit_username"
-                name="username"
-                value={editForm.username}
-                onChange={onEditChange}
-                placeholder="Enter username"
-              />
-            </div>
             <div className="form-field">
               <label className="form-label required">Email</label>
               <input

@@ -12,6 +12,7 @@ export default function CalibrationPlanner() {
   const [mode, setMode] = React.useState('month') // 'month' | 'year'
   const [heldGaugeIds, setHeldGaugeIds] = React.useState(new Set()) // gauges currently held by operator
   const [heldByMap, setHeldByMap] = React.useState({}) // { gauge_id: operator_username }
+  const [userEmailMap, setUserEmailMap] = React.useState({}) // { usernameLower: email }
   
   // Calculate KPIs for the selected period
   const kpis = React.useMemo(() => {
@@ -120,6 +121,22 @@ export default function CalibrationPlanner() {
     }
   }
 
+  // Build username -> email lookup (used for PDF export)
+  const ensureUserEmails = async () => {
+    try {
+      if (userEmailMap && Object.keys(userEmailMap).length > 0) return
+      const res = await fetch('/users')
+      if (!res.ok) return
+      const arr = await res.json().catch(()=>[])
+      const map = {}
+      for (const u of (Array.isArray(arr) ? arr : [])) {
+        const uname = (u.username || '').toString().trim().toLowerCase()
+        if (uname) map[uname] = u.email || ''
+      }
+      setUserEmailMap(map)
+    } catch {}
+  }
+
   const fetchRequestedGauges = async () => {
     try {
       const allRequests = []
@@ -181,6 +198,198 @@ export default function CalibrationPlanner() {
       message.success(data.message || 'Reminder email sent')
     } catch (e) {
       message.error(typeof e?.message === 'string' ? e.message : 'Failed to send reminder')
+    }
+  }
+
+  // ---------- PDF generation helpers ----------
+  const loadJsPdf = () => new Promise((resolve, reject) => {
+    try {
+      if (window.jspdf && window.jspdf.jsPDF) return resolve(window.jspdf.jsPDF)
+      const s = document.createElement('script')
+      s.src = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js'
+      s.async = true
+      s.onload = () => { try { resolve(window.jspdf.jsPDF) } catch (e) { reject(e) } }
+      s.onerror = reject
+      document.head.appendChild(s)
+    } catch (e) { reject(e) }
+  })
+
+  const withinPeriod = (dateStr) => {
+    if (!dateStr) return false
+    const d = dayjs(dateStr)
+    if (!d.isValid()) return false
+    if (mode === 'year') return d.year() === value.year()
+    return d.month() === value.month() && d.year() === value.year()
+  }
+
+  const formatDate = (dateStr) => {
+    try { return dayjs(dateStr).format('YYYY-MM-DD') } catch { return String(dateStr||'') }
+  }
+
+  const computeSections = () => {
+    const today = dayjs()
+    const due = []
+    const missed = []
+    const calibrated = []
+    for (const r of items) {
+      const eq = r.name_of_the_equipment || `Gauge ${r.gauge_id}`
+      const idfn = r.idfn_no || ''
+      const opUserRaw = heldByMap[r.gauge_id] || ''
+      const opEmailRaw = opUserRaw ? (userEmailMap[(opUserRaw || '').trim().toLowerCase()] || '') : ''
+      const opUser = opUserRaw || '-'
+      const opEmail = opEmailRaw || '-'
+      if (r.calibration_due && withinPeriod(r.calibration_due)) {
+        const dd = dayjs(r.calibration_due)
+        const entry = { eq, idfn, opUser, opEmail, date: dd }
+        if (dd.isBefore(today, 'day')) missed.push(entry)
+        else due.push(entry)
+      }
+      if (r.date_of_last_calibration && withinPeriod(r.date_of_last_calibration)) {
+        calibrated.push({ eq, idfn, opUser, opEmail, date: dayjs(r.date_of_last_calibration) })
+      }
+    }
+    // Sort by nearest date to today first
+    const byNearest = (a,b) => Math.abs(a.date.diff(today, 'day')) - Math.abs(b.date.diff(today, 'day'))
+    due.sort(byNearest)
+    missed.sort(byNearest)
+    calibrated.sort(byNearest)
+    return {
+      due: due.map((x, i) => ({ sl: i+1, ...x, dateText: formatDate(x.date) })),
+      missed: missed.map((x, i) => ({ sl: i+1, ...x, dateText: formatDate(x.date) })),
+      calibrated: calibrated.map((x, i) => ({ sl: i+1, ...x, dateText: formatDate(x.date) })),
+    }
+  }
+
+  const drawTable = (doc, title, rows, dateColHeader, startY, titleColor = '#000000') => {
+    const margin = 28
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const pageHeight = doc.internal.pageSize.getHeight()
+    const usable = pageWidth - margin*2
+    const cols = [
+      { key:'sl', label:'Sl No.', w: 50 },
+      { key:'eq', label:'Equipment', w: Math.floor(usable*0.28) },
+      { key:'idfn', label:'IDFN', w: 90 },
+      { key:'opUser', label:'Operator', w: Math.floor(usable*0.18) },
+      { key:'opEmail', label:'Email', w: Math.floor(usable*0.22) },
+      { key:'dateText', label:dateColHeader, w: 110 },
+    ]
+    const total = cols.reduce((s,c)=> s + (typeof c.w==='number'?c.w:0), 0)
+    const scale = usable / total
+    cols.forEach(c => { c.w = Math.max(60, Math.floor(c.w * scale)) })
+
+    let y = startY
+    // Section title (colored)
+    doc.setFont('helvetica','bold'); doc.setFontSize(12)
+    try { doc.setTextColor(...(typeof titleColor === 'string' ? [] : titleColor)) } catch {}
+    if (typeof titleColor === 'string') { doc.setTextColor(titleColor) }
+    doc.text(title, margin, y)
+    doc.setTextColor(0,0,0)
+    y += 10
+
+    // Header row with blue background
+    const headerHeight = 18
+    let x = margin
+    doc.setFillColor(0, 120, 215) //header color
+    doc.setTextColor(255,255,255)
+    doc.rect(x, y, usable, headerHeight, 'F')
+    doc.setFont('helvetica','bold'); doc.setFontSize(10)
+    for (const c of cols) {
+      doc.text(String(c.label), x + 6, y + 12)
+      x += c.w
+    }
+    y += headerHeight
+
+    // Reset text color for rows
+    doc.setTextColor(0,0,0)
+    doc.setFont('helvetica','normal'); doc.setFontSize(9)
+    const baseLine = 12
+    const rowPadV = 6
+    const lineH = baseLine + rowPadV // logical per-line advance
+
+    const renderRow = (row, idx) => {
+      // alternate row background
+      if (idx % 2 === 0) {
+        doc.setFillColor(245, 247, 250) // light gray-blue
+        doc.rect(margin, y, usable, lineH, 'F')
+      }
+      let x0 = margin
+      // Wrap per-column text and compute tallest cell
+      let rowHeight = lineH
+      const wrapped = {}
+      for (const c of cols) {
+        const txt = String(row[c.key] ?? '')
+        const lines = doc.splitTextToSize(txt, c.w - 12)
+        wrapped[c.key] = lines
+        rowHeight = Math.max(rowHeight, Math.max(lineH, lines.length * baseLine + rowPadV*2))
+      }
+      // Page break handling (ensure header repeats)
+      if (y + rowHeight > pageHeight - margin) {
+        doc.addPage()
+        y = margin
+        // repeat header bar
+        let hx = margin
+        doc.setFillColor(24, 144, 255)
+        doc.setTextColor(255,255,255)
+        doc.rect(hx, y, usable, headerHeight, 'F')
+        doc.setFont('helvetica','bold'); doc.setFontSize(10)
+        for (const c of cols) { doc.text(String(c.label), hx + 6, y + 12); hx += c.w }
+        y += headerHeight
+        doc.setTextColor(0,0,0)
+        doc.setFont('helvetica','normal'); doc.setFontSize(9)
+      }
+      // Draw cell texts
+      for (const c of cols) {
+        const lines = wrapped[c.key]
+        let yy = y + rowPadV
+        for (const line of lines) { doc.text(line, x0 + 6, yy + baseLine - 2); yy += baseLine }
+        x0 += c.w
+      }
+      // Row bottom border
+      doc.setDrawColor(230,230,230)
+      doc.line(margin, y + rowHeight, margin + usable, y + rowHeight)
+      y += rowHeight
+    }
+    rows.forEach((r, i) => renderRow(r, i))
+    return y + 12
+  }
+
+  const handleDownloadPdf = async () => {
+    try {
+      await ensureUserEmails()
+      const jsPDF = await loadJsPdf()
+      const doc = new jsPDF({ orientation:'landscape', unit:'pt', format:'a4' })
+      const margin = 28
+      const title = 'Calibration Planner'
+      const sub = mode === 'year' ? `Period: Year ${value.year()}` : `Period: ${value.format('YYYY MMM')}`
+      const generated = `Exported: ${dayjs().format('DD/MM/YYYY, h:mm a')}`
+      const org = 'Organization: CMTI'
+      // Header Title
+      doc.setFont('helvetica','bold'); doc.setFontSize(16)
+      doc.text(title, margin, 36)
+      // Right aligned org
+      const pageWidth = doc.internal.pageSize.getWidth()
+      const orgWidth = doc.getTextWidth(org)
+      doc.setFont('helvetica','normal'); doc.setFontSize(10)
+      doc.text(org, pageWidth - margin - orgWidth, 36)
+      // Sub lines
+      doc.setFont('helvetica','normal'); doc.setFontSize(11)
+      doc.text(generated, margin, 54)
+      doc.text(sub, margin, 70)
+
+      const { due, missed, calibrated } = computeSections()
+      let y = 92
+      if (due.length) y = drawTable(doc, 'Due', due, 'Due Date', y, '#faad14')
+      if (missed.length) y = drawTable(doc, 'Missed', missed, 'Missed Date', y, '#f5222d')
+      if (calibrated.length) y = drawTable(doc, 'Calibrated', calibrated, 'Calibrated Date', y, '#52c41a')
+      if (!due.length && !missed.length && !calibrated.length) {
+        doc.setFont('helvetica','italic'); doc.text('No data for selected period.', margin, y)
+      }
+      const fname = mode === 'year' ? `calibration_report_${value.year()}.pdf` : `calibration_report_${value.format('YYYY_MM')}.pdf`
+      doc.save(fname)
+    } catch (e) {
+      message.error('Failed to generate PDF')
+      // eslint-disable-next-line no-console
+      console.error(e)
     }
   }
 
@@ -293,6 +502,7 @@ export default function CalibrationPlanner() {
           </div>
           <div className="action-buttons">
             <Button icon={<ReloadOutlined />} onClick={() => { fetchAll(); fetchRequestedGauges() }}>Refresh</Button>
+            <Button type="primary" onClick={handleDownloadPdf}>Download PDF</Button>
           </div>
         </div>
 

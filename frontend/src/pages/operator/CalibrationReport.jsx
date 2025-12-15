@@ -138,9 +138,20 @@ export default function CalibrationReport() {
       const updates = {}
       await Promise.all(unique.map(async (gid) => {
         try {
-          const res = await fetch(`/gauges/${gid}/reports`)
-          const arr = res.ok ? await res.json().catch(()=>[]) : []
-          updates[gid] = Array.isArray(arr) && arr.length > 0
+          const reps = await fetch(`/gauges/${gid}/reports`)
+          const reports = reps.ok ? await reps.json().catch(()=>[]) : []
+          let anyFiles = false
+          if (Array.isArray(reports) && reports.length) {
+            for (const r of reports) {
+              try {
+                const fr = await fetch(`/gauges/${gid}/reports/${r.id}/files`)
+                if (!fr.ok) continue
+                const files = await fr.json().catch(()=>[])
+                if (Array.isArray(files) && files.length) { anyFiles = true; break }
+              } catch {}
+            }
+          }
+          updates[gid] = anyFiles
         } catch { updates[gid] = false }
       }))
       setHasFilesMap(prev => ({ ...prev, ...updates }))
@@ -197,7 +208,7 @@ export default function CalibrationReport() {
         </Space>
       )
     }},
-  ], [])
+  ], [hasFilesMap, hasFilesLoading])
 
   return (
     <div className="equipment-table-container">
