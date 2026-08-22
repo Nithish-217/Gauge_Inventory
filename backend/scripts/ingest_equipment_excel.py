@@ -14,7 +14,7 @@ from app.models import Base  # noqa: E402
 from sqlalchemy import text
 
 # Path to the Excel file to ingest
-EXCEL_PATH = Path(r"d:\gaueinventory\Gauge_Inventory\40GAUGES.xlsx")
+EXCEL_PATH = Path(r"D:\GAGE_INVENTORY\Gauge_Inventory\40GAUGES.xlsx")
 TARGET_TABLE = "equipment_used_for_calibration"
 REPLACE_ALL = True  # when True, delete existing rows and insert everything from Excel
 

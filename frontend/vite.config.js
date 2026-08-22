@@ -5,82 +5,87 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 3006,
-    host: 'localhost',
+    host: '0.0.0.0',
     open: false,
     proxy: {
       '/api': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       '/auth': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       '/users': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       '/equipment': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       '/gauge-tracker': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       '/requests': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       '/barcode': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       '/qrcode': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       '/gauges': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       '/reports': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       '/reminders': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       '/analytics': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       '/admin/free-all-tools': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       // Proxy specific admin API endpoints (do NOT proxy /admin SPA routes)
       '/admin/email-logs': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },
       '/admin/due-reminder': {
-        target: 'http://localhost:5756',
+        target: 'http://10.37.82.194:8000',
+        changeOrigin: true,
+        secure: false
+      },
+      '/label-preview': {
+        target: 'http://10.37.82.194:8000',
         changeOrigin: true,
         secure: false
       },

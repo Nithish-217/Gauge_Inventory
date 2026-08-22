@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi import Request, Response, Header
+from fastapi.responses import HTMLResponse
 
 from fastapi import UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -1285,6 +1286,13 @@ try:
 except Exception:
     _due_reminder_offset_days = 0
 
+# Support multiple reminder intervals (e.g., "1,3,10" for 1, 3, and 10 days before due)
+try:
+    _reminder_intervals_str = os.getenv("REMINDER_INTERVALS", "1,3,10")
+    _reminder_intervals = [int(x.strip()) for x in _reminder_intervals_str.split(",") if x.strip().isdigit()]
+except Exception:
+    _reminder_intervals = [1, 3, 10]  # Default intervals
+
 
 def _parse_hhmm(s: str) -> tuple[int, int]:
     p = (s or "").strip()
@@ -1320,10 +1328,22 @@ def _trigger_due_reminder():
         except Exception as e:
             print(f"[due-reminder] HTTP trigger failed: {e}")
     else:
-        # Direct in-process run
-        # ensure the script sees the current offset
-        os.environ["DAYS_BEFORE_DUE"] = str(_due_reminder_offset_days)
-        due_reminder_script.main()
+        # Direct in-process run with multiple intervals
+        total_results = {"checked": 0, "sent_operator": 0, "sent_admin": 0, "failed": 0}
+        for interval in _reminder_intervals:
+            print(f"[due-reminder] Running for interval: {interval} days before due")
+            os.environ["DAYS_BEFORE_DUE"] = str(interval)
+            try:
+                result = due_reminder_script.main()
+                if isinstance(result, dict):
+                    total_results["checked"] += result.get("checked", 0)
+                    total_results["sent_operator"] += result.get("sent_operator", 0)
+                    total_results["sent_admin"] += result.get("sent_admin", 0)
+                    total_results["failed"] += result.get("failed", 0)
+            except Exception as e:
+                print(f"[due-reminder] Failed for interval {interval}: {e}")
+                total_results["failed"] += 1
+        print(f"[due-reminder] Total results: {total_results}")
 
 
 def _run_due_reminder_job_safely():
@@ -1389,7 +1409,59 @@ def get_due_reminder_time():
 
 @app.get("/admin/due-reminder/offset")
 def get_due_reminder_offset():
-    return {"days": _due_reminder_offset_days}
+    return {"days": _due_reminder_offset_days, "intervals": _reminder_intervals}
+
+
+@app.get("/admin/due-reminder/intervals")
+def get_due_reminder_intervals():
+    return {"intervals": _reminder_intervals}
+
+
+@app.put("/admin/due-reminder/intervals")
+async def set_due_reminder_intervals(request: Request, intervals: str | None = None):
+    global _reminder_intervals
+    ival = None
+    # Try JSON
+    try:
+        data = await request.json()
+        if isinstance(data, dict) and "intervals" in data:
+            ival = data.get("intervals")
+    except Exception:
+        pass
+    # Try form
+    if ival is None:
+        try:
+            form_data = await request.form()
+            if "intervals" in form_data:
+                ival = form_data["intervals"]
+        except Exception:
+            pass
+    # Try query param
+    if ival is None and intervals:
+        ival = intervals
+
+    if not ival:
+        raise HTTPException(status_code=400, detail="Missing 'intervals' parameter")
+
+    try:
+        # Parse comma-separated intervals
+        if isinstance(ival, str):
+            new_intervals = [int(x.strip()) for x in ival.split(",") if x.strip().isdigit()]
+        elif isinstance(ival, list):
+            new_intervals = [int(x) for x in ival]
+        else:
+            raise HTTPException(status_code=400, detail="Invalid intervals format")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid intervals; must be comma-separated integers")
+
+    if not new_intervals:
+        raise HTTPException(status_code=400, detail="At least one interval required")
+
+    _reminder_intervals = new_intervals
+    # Also update the single offset for backward compatibility
+    _due_reminder_offset_days = new_intervals[0] if new_intervals else 0
+
+    return {"intervals": _reminder_intervals, "days": _due_reminder_offset_days}
 
 
 @app.get("/admin/email-logs")
@@ -1515,14 +1587,30 @@ async def set_due_reminder_time(request: Request, time: str | None = None):
 @app.post("/admin/due-reminder/run")
 def run_due_reminder_now():
     try:
-        os.environ["DAYS_BEFORE_DUE"] = str(_due_reminder_offset_days)
-        result = due_reminder_script.main()
-        # Ensure result is a dict with useful fields
-        if isinstance(result, dict):
-            out = {"success": True}
-            out.update(result)
-            return out
-        return {"success": True, "result": result}
+        total_results = {"checked": 0, "sent_operator": 0, "sent_admin": 0, "failed": 0, "intervals_run": []}
+        for interval in _reminder_intervals:
+            print(f"[due-reminder] Manual run for interval: {interval} days before due")
+            os.environ["DAYS_BEFORE_DUE"] = str(interval)
+            try:
+                result = due_reminder_script.main()
+                if isinstance(result, dict):
+                    total_results["checked"] += result.get("checked", 0)
+                    total_results["sent_operator"] += result.get("sent_operator", 0)
+                    total_results["sent_admin"] += result.get("sent_admin", 0)
+                    total_results["failed"] += result.get("failed", 0)
+                    total_results["intervals_run"].append({
+                        "interval": interval,
+                        "result": result
+                    })
+            except Exception as e:
+                print(f"[due-reminder] Manual run failed for interval {interval}: {e}")
+                total_results["failed"] += 1
+                total_results["intervals_run"].append({
+                    "interval": interval,
+                    "error": str(e)
+                })
+        print(f"[due-reminder] Manual run total results: {total_results}")
+        return {"success": True, "results": total_results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"due_reminder failed: {e}")
 
@@ -2251,7 +2339,7 @@ def list_gauge_tracks(
         # Build fallback order by using gt/e columns
         if sort_by:
             fb_allowed = {
-                "id": "gt.id",
+                "id": "gt.transaction_id",
                 "gauge_id": "gt.gauge_id",
                 "requested_at": "gt.requested_at",
                 "status": "gt.status",
@@ -2265,10 +2353,11 @@ def list_gauge_tracks(
             fb_order = f"{fb_col} {fb_dir}"
         else:
             fb_order = "gt.requested_at DESC"
+        # Fixed: gt.id -> gt.transaction_id AS id to match schema
         fb_sql = text(
             f"""
-            SELECT 
-              gt.id,
+            SELECT
+              gt.transaction_id AS id,
               gt.gauge_id,
               e.name_of_the_equipment,
               e.idfn_no,
@@ -2492,9 +2581,9 @@ def qrcode_by_idfn_png(idfn: str, request: Request, db: Session = Depends(get_db
         return str(d)
 
     base = os.getenv("APP_BASE_URL") or str(request.base_url).rstrip("/")
-    report_url = f"{base}/reports/{row['gauge_id']}/download"
-    # Encode only the direct report URL so scanners open the link immediately
-    payload = report_url
+    preview_url = f"{base}/label-preview/{idfn}"
+    # Encode the preview URL so scanners show the label preview page
+    payload = preview_url
 
     # Build QR
     qr = qrcode.QRCode(version=1, box_size=10, border=2)
@@ -2589,6 +2678,208 @@ def qrcode_by_idfn_png(idfn: str, request: Request, db: Session = Depends(get_db
         qr_img.save(fb, format="PNG")
         fb.seek(0)
         return StreamingResponse(fb, media_type="image/png")
+
+
+# Label Preview Page - shows when QR code is scanned
+@app.get("/label-preview/{idfn}")
+def label_preview(idfn: str, request: Request, db: Session = Depends(get_db)):
+    """HTML preview page that shows when QR code is scanned with Google Lens/scanner"""
+    row = db.execute(text(
+        """
+        SELECT e.gauge_id, e.idfn_no, e.name_of_the_equipment, e.location, e.make_model,
+               e.date_of_last_calibration, e.calibration_due, e.overall_measurement_uncertainty,
+               e.calibration_freq_months, e.pcr_number,
+               (
+                 SELECT ARRAY(
+                   SELECT gr.label FROM public.gauge_ranges gr
+                   WHERE gr.gauge_id = e.gauge_id
+                   ORDER BY gr.label ASC
+                 )
+               ) AS ranges
+        FROM public.equipment_used_for_calibration e
+        WHERE TRIM(LOWER(e.idfn_no)) = TRIM(LOWER(:idfn))
+        LIMIT 1
+        """
+    ), {"idfn": idfn}).mappings().first()
+    
+    if not row:
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><title>Label Not Found</title></head>
+        <body>
+            <h1>Label Not Found</h1>
+            <p>IDFN: {idfn} not found in the system.</p>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html)
+    
+    def fmt_date(d):
+        if not d:
+            return "N/A"
+        try:
+            from datetime import datetime
+            if isinstance(d, datetime):
+                return d.strftime("%d/%m/%Y")
+        except Exception:
+            pass
+        return str(d)
+    
+    ranges_list = row.get('ranges') or []
+    ranges_html = ", ".join([str(r) for r in ranges_list]) if ranges_list else "N/A"
+    
+    base = os.getenv("APP_BASE_URL") or str(request.base_url).rstrip("/")
+    report_url = f"{base}/reports/{row['gauge_id']}/download"
+    
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Label Preview - {}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                max-width: 600px;
+                margin: 20px auto;
+                padding: 20px;
+                background-color: #f5f5f5;
+            }}
+            .label-container {{
+                background: white;
+                border-radius: 10px;
+                padding: 20px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }}
+            .header {{
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 15px;
+                border-radius: 8px;
+                margin-bottom: 20px;
+            }}
+            .header h1 {{
+                margin: 0;
+                font-size: 24px;
+            }}
+            .field {{
+                margin-bottom: 15px;
+            }}
+            .field-label {{
+                font-weight: bold;
+                color: #333;
+                margin-bottom: 5px;
+            }}
+            .field-value {{
+                color: #555;
+                font-size: 16px;
+            }}
+            .status {{
+                display: inline-block;
+                padding: 5px 10px;
+                border-radius: 5px;
+                font-weight: bold;
+            }}
+            .status-due {{
+                background-color: #fff3cd;
+                color: #856404;
+            }}
+            .status-ok {{
+                background-color: #d4edda;
+                color: #155724;
+            }}
+            .download-btn {{
+                display: inline-block;
+                background: #28a745;
+                color: white;
+                padding: 12px 24px;
+                text-decoration: none;
+                border-radius: 5px;
+                margin-top: 20px;
+                font-weight: bold;
+            }}
+            .download-btn:hover {{
+                background: #218838;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="label-container">
+            <div class="header">
+                <h1>Label Preview</h1>
+            </div>
+            
+            <div class="field">
+                <div class="field-label">IDFN Number:</div>
+                <div class="field-value">{}</div>
+            </div>
+            
+            <div class="field">
+                <div class="field-label">Equipment Name:</div>
+                <div class="field-value">{}</div>
+            </div>
+            
+            <div class="field">
+                <div class="field-label">Make/Model:</div>
+                <div class="field-value">{}</div>
+            </div>
+            
+            <div class="field">
+                <div class="field-label">Location:</div>
+                <div class="field-value">{}</div>
+            </div>
+            
+            <div class="field">
+                <div class="field-label">Ranges:</div>
+                <div class="field-value">{}</div>
+            </div>
+            
+            <div class="field">
+                <div class="field-label">Last Calibration:</div>
+                <div class="field-value">{}</div>
+            </div>
+            
+            <div class="field">
+                <div class="field-label">Next Due:</div>
+                <div class="field-value">{}</div>
+            </div>
+            
+            <div class="field">
+                <div class="field-label">Measurement Uncertainty:</div>
+                <div class="field-value">{}</div>
+            </div>
+            
+            <div class="field">
+                <div class="field-label">Calibration Frequency:</div>
+                <div class="field-value">{} months</div>
+            </div>
+            
+            <div class="field">
+                <div class="field-label">PCR Number:</div>
+                <div class="field-value">{}</div>
+            </div>
+            
+            <a href="{}" class="download-btn">Download Calibration Report</a>
+        </div>
+    </body>
+    </html>
+    """.format(
+        idfn,
+        row.get('idfn_no', 'N/A'),
+        row.get('name_of_the_equipment', 'N/A'),
+        row.get('make_model', 'N/A'),
+        row.get('location', 'N/A'),
+        ranges_html,
+        fmt_date(row.get('date_of_last_calibration')),
+        fmt_date(row.get('calibration_due')),
+        row.get('overall_measurement_uncertainty', 'N/A'),
+        row.get('calibration_freq_months', 'N/A'),
+        row.get('pcr_number', 'N/A'),
+        report_url
+    )
+    
+    return HTMLResponse(content=html)
 
 
 # =========================

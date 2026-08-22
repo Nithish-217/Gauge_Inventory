@@ -1,5 +1,5 @@
--- Schema for gauge_inventory (PostgreSQL)
--- Generated for: localhost:2424, db gauge_inventory
+-- Schema for GAUGE_INVENTORY (PostgreSQL)
+-- Generated for: localhost:2424, db GAUGE_INVENTORY
 
 -- 1) users
 CREATE TABLE IF NOT EXISTS public.users (

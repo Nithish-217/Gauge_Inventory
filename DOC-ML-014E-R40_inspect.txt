@@ -1,4 +1,4 @@
-Workbook: d:\gaugeinventory\DOC-ML-014E-R40.xlsx
+Workbook: D:\GAGE_INVENTORY\Gauge_Inventory\DOC-ML-014E-R40.xlsx
 Sheets: Table 1
 
 [Sheet: Table 1] Preview:

@@ -113,6 +113,7 @@ def _log_email(db, to_email: str, subject: str, body: str, status: str, error: s
 
 def main():
     # Days before due: if 0 -> today; if N -> notify N days before due date
+    # This function is called multiple times for different intervals (1, 3, 10 days)
     try:
         offset_days = int(os.getenv("DAYS_BEFORE_DUE", "0"))
         if offset_days < 0:
@@ -130,7 +131,7 @@ def main():
         except Exception:
             pass
 
-        # 1) Fetch gauges due in 3 days
+        # 1) Fetch gauges due on the target date (offset days from now)
         rows = db.execute(text(
             """
             SELECT gauge_id, name_of_the_equipment, calibration_due
@@ -174,10 +175,11 @@ def main():
                         """
                     ), {"u": operator_username}).mappings().first()
                     if user and user.get("email"):
+                        days_text = f"{offset_days} day{'s' if offset_days != 1 else ''}"
                         subject = "Upcoming Gauge Due Date Reminder"
                         body = (
                             f"Dear {operator_username},\n\n"
-                            f"This is a reminder that the gauge assigned to you (Gauge ID: {gid}) is due for return/calibration in 3 days (Due Date: {fmt_date(due_val)}).\n\n"
+                            f"This is a reminder that the gauge assigned to you (Gauge ID: {gid}) is due for return/calibration in {days_text} (Due Date: {fmt_date(due_val)}).\n\n"
                             f"Please ensure necessary actions are taken before the due date.\n\n"
                             f"Regards,\n"
                             f"CMTI\n"
@@ -210,7 +212,7 @@ def main():
                 subject = "Upcoming Gauge Due Date Reminder"
                 body = (
                     f"Dear {operator_username},\n\n"
-                    f"This is a reminder that the gauge assigned to you (Gauge ID: {gid}) is due for return/calibration in 3 days (Due Date: {fmt_date(due_val)}).\n\n"
+                    f"This is a reminder that the gauge assigned to you (Gauge ID: {gid}) is due for return/calibration in {offset_days} day{'s' if offset_days != 1 else ''} (Due Date: {fmt_date(due_val)}).\n\n"
                     f"Please ensure necessary actions are taken before the due date.\n\n"
                     f"Regards,\n"
                     f"CMTI\n"
