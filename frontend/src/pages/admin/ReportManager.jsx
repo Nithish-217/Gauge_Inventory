@@ -5,6 +5,32 @@ import { Table, Button, Space, Input, DatePicker, InputNumber, Upload, message, 
 import { ReloadOutlined, UploadOutlined, DownloadOutlined, EyeOutlined, FolderOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 
+function TextFilePreview({ url }) {
+  const [content, setContent] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setContent(null)
+    setError('')
+    fetch(url, { signal: controller.signal })
+      .then((res) => {
+        if (!res.ok) throw new Error(`Unable to load file (${res.status})`)
+        return res.text()
+      })
+      .then(setContent)
+      .catch((err) => {
+        if (err.name !== 'AbortError') setError(err.message || 'Unable to load file')
+      })
+    return () => controller.abort()
+  }, [url])
+
+  if (error) return <div style={{ padding: 16, color: '#cf1322' }}>{error}</div>
+  if (content === null) return <div style={{ padding: 16 }}>Loading file...</div>
+  if (!content) return <div style={{ padding: 16, color: '#8c8c8c' }}>This file is empty.</div>
+  return <pre style={{ flex: 1, width: '100%', margin: 0, padding: 16, overflow: 'auto', whiteSpace: 'pre-wrap', textAlign: 'left' }}>{content}</pre>
+}
+
 export default function ReportManager() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(false)
@@ -824,6 +850,7 @@ export default function ReportManager() {
               const ext = (name='') => String(name).toLowerCase().split('.').pop()
               const isPdf = (f) => (f?.content_type||'').startsWith('application/pdf') || ['pdf'].includes(ext(f?.original_name||''))
               const isImg = (f) => (f?.content_type||'').startsWith('image/') || ['png','jpg','jpeg','gif','webp','bmp'].includes(ext(f?.original_name||''))
+              const isText = (f) => (f?.content_type||'').startsWith('text/') || ['txt','csv'].includes(ext(f?.original_name||''))
               const renderPreviewForFile = (entry, file) => {
                 const previewUrl = file ? `/gauges/${viewerGauge.gauge_id}/reports/${entry.report.id}/files/${file.id}/stream?download=0` : null
                 return (
@@ -837,7 +864,7 @@ export default function ReportManager() {
                         isImg(file) ? (
                           <img src={previewUrl} alt={file.original_name||'preview'} style={{ width: '100%', height: '100%', objectFit: 'contain', border: '1px solid #eee' }} />
                         ) : (
-                          <div style={{ padding:16 }}>
+                          isText(file) ? <TextFilePreview url={previewUrl} /> : <div style={{ padding:16 }}>
                             <div style={{ marginBottom:8 }}>Preview not available for this file type.</div>
                             <a href={previewUrl} target="_blank" rel="noreferrer">Open in new tab</a>
                           </div>

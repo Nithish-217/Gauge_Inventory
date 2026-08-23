@@ -4307,6 +4307,8 @@ async def create_report_with_files(
             data = await up.read()
             if data is None:
                 data = b""
+            if len(data) == 0:
+                raise HTTPException(status_code=400, detail=f"File {up.filename} is empty")
             if len(data) > MAX_FILE_BYTES:
                 raise HTTPException(status_code=413, detail=f"File {up.filename} exceeds 20MB limit")
 
@@ -4350,6 +4352,9 @@ async def create_report_with_files(
                 "object_key": object_key,
             })
         db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to upload files: {str(e)}")
